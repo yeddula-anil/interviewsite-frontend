@@ -35,8 +35,9 @@ export const AuthProvider = ({ children }) => {
   // ✅ 3. Login
  const login = async (email, password) => {
   try {
-    await axiosInstance.post('/auth/login', { email, password });
+    const res=await axiosInstance.post('/auth/login', { email, password });
     console.log("login called");
+    console.log("user",res)
 
     // Wait for cookies to be stored in the browser
     // await new Promise(res => setTimeout(res, 300));
