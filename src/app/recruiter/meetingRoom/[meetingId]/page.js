@@ -38,7 +38,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
 
   useEffect(() => {
     // Initialize WebSocket connection
-    const socket = new SockJS('https://interviewsite-backend.onrender.com/ws');
+    const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     stompClient.current = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 5000,

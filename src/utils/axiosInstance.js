@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const axiosInstance = axios.create({
-  baseURL: 'https://interviewsite-backend.onrender.com/api',
+  baseURL: `${process.env.NEXT_PUBLIC_API_URL}/api`,
   withCredentials: true, // send cookies
 });
 
@@ -22,7 +22,7 @@ const processQueue = (error = null) => {
 
 // Plain axios instance for refresh (no interceptor)
 const refreshInstance = axios.create({
-  baseURL: 'https://interviewsite-backend.onrender.com/api',
+  baseURL: `${process.env.NEXT_PUBLIC_API_URL}/api`,
   withCredentials: true,
 });
 
