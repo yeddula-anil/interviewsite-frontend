@@ -39,9 +39,9 @@ export const AuthProvider = ({ children }) => {
     console.log("login called");
 
     // Wait for cookies to be stored in the browser
-    await new Promise(res => setTimeout(res, 300));
+    // await new Promise(res => setTimeout(res, 300));
 
-    const currentUser = await checkAuth();
+    // const currentUser = await checkAuth();
     return { success: true, user: currentUser };
   } catch (err) {
     console.error('Login failed:', err);
