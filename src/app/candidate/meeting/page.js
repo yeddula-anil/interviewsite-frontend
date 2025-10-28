@@ -215,3 +215,5 @@ const JoinMeetingPage = () => {
 };
 
 export default JoinMeetingPage;
+export const dynamic = "force-dynamic";
+
