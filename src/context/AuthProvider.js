@@ -43,7 +43,7 @@ export const AuthProvider = ({ children }) => {
     // await new Promise(res => setTimeout(res, 300));
 
     // const currentUser = await checkAuth();
-    return { success: true, user: currentUser };
+    return { success: true, user: res };
   } catch (err) {
     console.error('Login failed:', err);
     return { success: false, message: err.response?.data?.message || 'Login failed' };
