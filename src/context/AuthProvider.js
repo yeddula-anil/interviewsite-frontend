@@ -33,16 +33,22 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   // ✅ 3. Login
-  const login = async (email, password) => {
-    try {
-      await axiosInstance.post('/auth/login', { email, password });
-      const currentUser = await checkAuth();
-      return { success: true, user: currentUser };
-    } catch (err) {
-      console.error('Login failed:', err);
-      return { success: false, message: err.response?.data?.message || 'Login failed' };
-    }
-  };
+ const login = async (email, password) => {
+  try {
+    await axiosInstance.post('/auth/login', { email, password });
+    console.log("login called");
+
+    // Wait for cookies to be stored in the browser
+    await new Promise(res => setTimeout(res, 300));
+
+    const currentUser = await checkAuth();
+    return { success: true, user: currentUser };
+  } catch (err) {
+    console.error('Login failed:', err);
+    return { success: false, message: err.response?.data?.message || 'Login failed' };
+  }
+};
+
 
   // ✅ 4. Signup
   const signup = async (username, email, password, role) => {
