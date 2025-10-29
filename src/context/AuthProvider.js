@@ -2,77 +2,117 @@
 
 import { createContext, useContext, useState, useEffect } from 'react';
 import axiosInstance from '@/utils/axiosInstance';
+import { useRouter } from 'next/navigation';
 
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
+  const router = useRouter();
   const [user, setUser] = useState(null);
   const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // ✅ 1. Check if the user is authenticated
+  // ✅ Fetch current user if token exists
   const checkAuth = async () => {
-    try {
-      const res = await axiosInstance.get('/auth/me'); // backend endpoint
-      setUser(res.data);
-      setAuthenticated(true);
-      console.log("✅ Auth check success:", res.data);
-      return res.data;
-    } catch (err) {
-      console.warn("❌ Auth check failed:", err.response?.status);
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+
+    if (!token) {
       setUser(null);
       setAuthenticated(false);
+      setLoading(false);
+      return null;
+    }
+
+    try {
+      const res = await axiosInstance.get('/auth/me');
+      setUser(res.data);
+      setAuthenticated(true);
+      return res.data;
+    } catch (err) {
+      console.warn('❌ Auth check failed:', err.response?.status);
+      localStorage.removeItem('accessToken');
+      setUser(null);
+      setAuthenticated(false);
+      router.replace('/auth/signin');
       return null;
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ 2. Run auth check on mount
+  // ✅ Check authentication on page load or refresh
   useEffect(() => {
-    checkAuth();
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      // small delay to ensure token is attached to axios
+      setTimeout(() => checkAuth(), 150);
+    } else {
+      setLoading(false);
+    }
   }, []);
 
-  // ✅ 3. Login handler
+  // ✅ Login function
   const login = async (email, password) => {
     try {
       const res = await axiosInstance.post('/auth/login', { email, password });
-      console.log("✅ Login successful:", res.data);
 
-      // Wait for tokens to be stored
-      await new Promise(res => setTimeout(res, 200));
+      if (res.data.accessToken) {
+        localStorage.setItem('accessToken', res.data.accessToken);
+      }
 
-      // Verify user after login
-      const currentUser = await checkAuth();
-      return { success: true, user: currentUser };
+      
+        // Otherwise fetch it manually
+      const data=await checkAuth();
+      console.log(data.user)
+      
+
+      return { success: true, user: data};
     } catch (err) {
-      console.error("❌ Login failed:", err.response?.data || err.message);
-      return { success: false, message: err.response?.data?.message || 'Login failed' };
+      console.error('❌ Login failed:', err.response?.data || err.message);
+      return {
+        success: false,
+        message: err.response?.data?.message || 'Login failed',
+      };
     }
   };
+  const signup = async (username, email, password,role) => {
+  try {
+    const res = await axiosInstance.post('/auth/register', {
+      username,
+      email,
+      password,
+      role
+    });
 
-  // ✅ 4. Signup handler
-  const signup = async (username, email, password, role) => {
-    try {
-      const res = await axiosInstance.post('/auth/register', { username, email, password, role });
-      console.log("✅ Signup successful:", res.data);
-      const currentUser = await checkAuth();
-      return { success: true, user: currentUser };
-    } catch (err) {
-      console.error("❌ Signup failed:", err.response?.data || err.message);
-      return { success: false, message: err.response?.data?.message || 'Signup failed' };
+    // If backend returns a token on signup
+    if (res.data.accessToken) {
+      localStorage.setItem('accessToken', res.data.accessToken);
     }
-  };
 
-  // ✅ 5. Logout handler
+    // Fetch and set the authenticated user
+    const data = await checkAuth();
+
+    return { success: true, user: data };
+  } catch (err) {
+    console.error('❌ Signup failed:', err.response?.data || err.message);
+    return {
+      success: false,
+      message: err.response?.data?.message || 'Signup failed',
+    };
+  }
+};
+
+  // ✅ Logout function
   const logout = async () => {
     try {
       await axiosInstance.post('/auth/logout');
+    } catch (err) {
+      console.error('❌ Logout failed:', err.response?.data || err.message);
+    } finally {
+      localStorage.removeItem('accessToken');
       setUser(null);
       setAuthenticated(false);
-      console.log("✅ Logged out successfully");
-    } catch (err) {
-      console.error("❌ Logout failed:", err.response?.data || err.message);
+      router.replace('/auth/signin');
     }
   };
 
@@ -93,4 +133,5 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
+// ✅ Custom hook for easy usage
 export const useAuth = () => useContext(AuthContext);

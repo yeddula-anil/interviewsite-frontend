@@ -5,9 +5,11 @@ import { useAuth } from '@/context/AuthProvider';
 import { Button } from '@/components/common/Button';
 import toast from 'react-hot-toast';
 
+
 export default function SignupPage() {
   const router = useRouter();
-  const { signup } = useAuth(); // use context
+  const {signup}=useAuth()
+  // use context
   const [formData, setFormData] = useState({
     username: '',
     email: '',
@@ -27,7 +29,7 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const { success, user, message } = await signup(
+      const { success, user } = await signup(
         formData.username,
         formData.email,
         formData.password,
@@ -49,7 +51,7 @@ export default function SignupPage() {
             router.push('/');
         }
       } else {
-        toast.error(message);
+        toast.error("error  while signing up");
       }
     } catch (err) {
       console.error(err);
