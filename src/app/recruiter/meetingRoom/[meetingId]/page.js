@@ -13,7 +13,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const params = useParams();
   const roomId = params.meetingId;
 
-  // UI States
+  // UI states
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
@@ -22,39 +22,45 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
 
-  // Chat
+  // Chat states
   const [chatMessages, setChatMessages] = useState([
     { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
   ]);
   const [chatInput, setChatInput] = useState('');
 
-  // Video refs
+  // Video & WebRTC refs
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-
-  // WebRTC & WebSocket refs
   const pc = useRef(null);
   const stompClient = useRef(null);
 
+  // 🧩 Initialize WebSocket + WebRTC
   useEffect(() => {
-    // Initialize WebSocket connection
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     stompClient.current = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 5000,
       debug: (msg) => console.log('STOMP:', msg),
-      onConnect: () => {
-        console.log('Connected to WebSocket');
+      onConnect: async () => {
+        console.log('✅ Connected to WebSocket');
         stompClient.current.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
           handleSignal(signal);
         });
+        await initLocalStream(); // wait until connected before sending offer
       },
     });
+
     stompClient.current.activate();
 
-    // Initialize WebRTC PeerConnection
-    pc.current = new RTCPeerConnection();
+    // Setup WebRTC
+    pc.current = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        // Optional TURN server
+        // { urls: 'turn:your-turn-server', username: 'user', credential: 'pass' },
+      ],
+    });
 
     pc.current.onicecandidate = (event) => {
       if (event.candidate) sendSignal('candidate', event.candidate);
@@ -65,37 +71,35 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       setRemoteCamOn(true);
     };
 
-    // Get user media & add tracks
-    const initLocalStream = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideoRef.current.srcObject = stream;
-        stream.getTracks().forEach(track => pc.current.addTrack(track, stream));
-
-        // Create offer and send to candidate
-        const offer = await pc.current.createOffer();
-        await pc.current.setLocalDescription(offer);
-        sendSignal('offer', offer);
-      } catch (err) {
-        console.error('Error accessing media devices:', err);
-      }
-    };
-    initLocalStream();
-
     return () => {
       stompClient.current.deactivate();
       pc.current.close();
     };
   }, [roomId]);
 
-  // Send signaling data to backend
+  // 🧠 Initialize local stream and create offer
+  const initLocalStream = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideoRef.current.srcObject = stream;
+      stream.getTracks().forEach(track => pc.current.addTrack(track, stream));
+
+      const offer = await pc.current.createOffer();
+      await pc.current.setLocalDescription(offer);
+      sendSignal('offer', offer);
+    } catch (err) {
+      console.error('Error accessing media devices:', err);
+    }
+  };
+
+  // 📨 Send signaling messages
   const sendSignal = (type, data) => {
     if (!stompClient.current || !stompClient.current.connected) return;
     const signalMessage = {
       sender: userName,
       type,
       data,
-      role: 'recruiter'
+      role: 'recruiter',
     };
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
@@ -103,17 +107,15 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     });
   };
 
-  // Handle incoming signals
+  // 🧩 Handle incoming WebRTC & chat signals
   const handleSignal = async (signal) => {
     if (signal.sender === userName) return; // ignore own messages
     const data = signal.data;
 
     switch (signal.type) {
       case 'answer':
-        // Candidate answered recruiter offer
         await pc.current.setRemoteDescription(new RTCSessionDescription(data));
         break;
-
       case 'candidate':
         try {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
@@ -121,18 +123,15 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           console.error('ICE Candidate error:', e);
         }
         break;
-
       case 'chat':
         setChatMessages(prev => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
-
       default:
         console.warn('Unknown signal type:', signal.type);
-        break;
     }
   };
 
-  // Send chat
+  // 💬 Chat send
   const sendChat = () => {
     if (!chatInput.trim()) return;
     sendSignal('chat', chatInput.trim());
@@ -140,11 +139,49 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     setChatInput('');
   };
 
-  // Controls
-  const toggleMic = () => setMicOn(prev => !prev);
-  const toggleCam = () => setCamOn(prev => !prev);
-  const toggleScreenShare = () => setScreenSharing(prev => !prev);
-  const leaveMeeting = () => (window.location.href = '/');
+  // 🎤 Mic toggle
+  const toggleMic = () => {
+    const stream = localVideoRef.current.srcObject;
+    if (stream) stream.getAudioTracks().forEach(track => track.enabled = !micOn);
+    setMicOn(prev => !prev);
+  };
+
+  // 🎥 Camera toggle
+  const toggleCam = () => {
+    const stream = localVideoRef.current.srcObject;
+    if (stream) stream.getVideoTracks().forEach(track => track.enabled = !camOn);
+    setCamOn(prev => !prev);
+  };
+
+  // 🖥️ Screen share toggle
+  const toggleScreenShare = async () => {
+    if (!screenSharing) {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
+        sender.replaceTrack(screenTrack);
+        screenTrack.onended = () => toggleScreenShare();
+        setScreenSharing(true);
+      } catch (err) {
+        console.error('Screen share error:', err);
+      }
+    } else {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const videoTrack = stream.getVideoTracks()[0];
+      const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
+      sender.replaceTrack(videoTrack);
+      setScreenSharing(false);
+    }
+  };
+
+  // 🚪 Leave meeting
+  const leaveMeeting = () => {
+    stompClient.current.deactivate();
+    pc.current.close();
+    window.location.href = '/';
+  };
+
   const toggleEditor = () => {
     setEditorOpen(prev => {
       if (prev) setEditorMaximized(false);
@@ -152,6 +189,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     });
   };
 
+  // 🖼️ UI
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
