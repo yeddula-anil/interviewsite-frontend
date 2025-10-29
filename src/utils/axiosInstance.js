@@ -2,7 +2,7 @@ import axios from 'axios';
 
 const axiosInstance = axios.create({
   baseURL: `${process.env.NEXT_PUBLIC_API_URL}/api`,
-  withCredentials: true, // send cookies
+  withCredentials: true, // ✅ Send cookies for JWT/refresh
 });
 
 // Avoid multiple refresh attempts
@@ -11,28 +11,27 @@ let failedQueue = [];
 
 const processQueue = (error = null) => {
   failedQueue.forEach(({ resolve, reject, originalRequest }) => {
-    if (error) {
-      reject(error);
-    } else {
-      resolve(axiosInstance(originalRequest));
-    }
+    if (error) reject(error);
+    else resolve(axiosInstance(originalRequest));
   });
   failedQueue = [];
 };
 
-// Plain axios instance for refresh (no interceptor)
+// Separate Axios instance for refresh (to avoid recursion)
 const refreshInstance = axios.create({
   baseURL: `${process.env.NEXT_PUBLIC_API_URL}/api`,
   withCredentials: true,
 });
 
+// ✅ Response Interceptor
 axiosInstance.interceptors.response.use(
-  response => response,
-  async error => {
+  (response) => response,
+  async (error) => {
     const originalRequest = error.config;
 
+    // If unauthorized and not yet retried
     if (error.response?.status === 401 && !originalRequest._retry) {
-      // Avoid retrying refresh request itself
+      // Avoid retrying refresh endpoint itself
       if (originalRequest.url.includes('/auth/refresh')) {
         return Promise.reject(error);
       }
@@ -40,7 +39,7 @@ axiosInstance.interceptors.response.use(
       originalRequest._retry = true;
 
       if (isRefreshing) {
-        // Queue the request and wait until refresh completes
+        // Queue the request while refreshing
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject, originalRequest });
         });
@@ -49,19 +48,22 @@ axiosInstance.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        // Call refresh token endpoint
+        // Try refreshing the access token
         await refreshInstance.post('/auth/refresh');
-
         isRefreshing = false;
+
         // Retry all queued requests
         processQueue();
 
-        // Retry original request
+        // Retry original failed request
         return axiosInstance(originalRequest);
       } catch (err) {
         isRefreshing = false;
-        
-        processQueue(err); // Reject all queued requests
+
+        // Reject all queued requests
+        processQueue(err);
+
+        console.error('❌ Token refresh failed — user must log in again');
         return Promise.reject(err);
       }
     }
