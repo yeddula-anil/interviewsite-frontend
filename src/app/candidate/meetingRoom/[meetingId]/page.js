@@ -15,8 +15,7 @@ const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
 const MeetingRoom = ({ userName = 'Candidate' }) => {
   const params = useParams();
-  console.log(params.meetingId)
-  const roomId = params.meetingId;
+  const roomId = String(params.meetingId || '');
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -34,49 +33,76 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const localStreamRef = useRef(null);
   const pc = useRef(null);
   const stompClient = useRef(null);
   const codeUpdateTimeout = useRef(null);
 
   // 🔌 WebSocket & WebRTC setup
   useEffect(() => {
+    if (!roomId) return;
+
+    // --- STOMP setup
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
-    stompClient.current = new Client({
+    const client = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 5000,
       debug: (msg) => console.log('STOMP:', msg),
       onConnect: () => {
         console.log('✅ Connected to WebSocket');
-        stompClient.current.subscribe(`/topic/signal/${roomId}`, (msg) => {
-          const signal = JSON.parse(msg.body);
-          console.log('📩 Received signal:', signal.type, 'from', signal.sender);
-          handleSignal(signal);
+        client.subscribe(`/topic/signal/${roomId}`, (msg) => {
+          try {
+            const signal = JSON.parse(msg.body);
+            console.log('📩 Received signal:', signal.type, 'from', signal.sender);
+            handleSignal(signal);
+          } catch (e) {
+            console.error('Failed to parse signal', e);
+          }
         });
 
         // Announce that candidate joined
         sendSignal('join', `${userName} joined the meeting`);
       },
     });
-    stompClient.current.activate();
+    stompClient.current = client;
+    client.activate();
 
-    // 🎥 Setup WebRTC
+    // --- WebRTC setup
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
+        // ⚠️ Public TURN creds are unreliable; replace with your own in production.
         {
           urls: 'turn:relay1.expressturn.com:3478',
           username: 'efree',
           credential: 'efree',
         },
       ],
+      iceCandidatePoolSize: 8,
     });
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate);
+      if (event.candidate) {
+        console.log('🧊 Local ICE candidate → sending');
+        sendSignal('candidate', event.candidate);
+      }
+    };
+
+    pc.current.onconnectionstatechange = () => {
+      console.log('🔗 PC state:', pc.current.connectionState);
     };
 
     pc.current.ontrack = (event) => {
-      remoteVideoRef.current.srcObject = event.streams[0];
+      console.log('🎥 Remote track received');
+      if (remoteVideoRef.current && !remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        const play = remoteVideoRef.current.play?.();
+        if (play && typeof play.then === 'function') {
+          play.catch(() => {
+            // ignore autoplay block; user gesture will play it
+          });
+        }
+      }
       setRemoteCamOn(true);
     };
 
@@ -84,18 +110,42 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
     const initLocalStream = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideoRef.current.srcObject = stream;
-        stream.getTracks().forEach(track => pc.current.addTrack(track, stream));
+        localStreamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          const play = localVideoRef.current.play?.();
+          if (play && typeof play.then === 'function') {
+            play.catch(() => {
+              // ignore autoplay block
+            });
+          }
+        }
+        stream.getTracks().forEach((track) => pc.current.addTrack(track, stream));
+        // Apply mic/cam initial state
+        stream.getAudioTracks().forEach((t) => (t.enabled = micOn));
+        stream.getVideoTracks().forEach((t) => (t.enabled = camOn));
       } catch (err) {
         console.error('❌ Media device access error:', err);
       }
     };
+
     initLocalStream();
 
     return () => {
-      stompClient.current.deactivate();
-      pc.current.close();
+      try {
+        client.deactivate();
+      } catch {}
+      try {
+        pc.current?.getSenders()?.forEach((s) => {
+          try { s.track?.stop(); } catch {}
+        });
+        pc.current?.close();
+      } catch {}
+      try {
+        localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
+      } catch {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
   // 🚀 Send messages to server
@@ -116,25 +166,35 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
   // 📡 Handle incoming signals
   const handleSignal = async (signal) => {
-    if (signal.sender === userName) return;
-    const data = signal.data;
+    if (signal?.sender === userName) return;
+    const data = signal?.data;
 
-    switch (signal.type) {
-      case 'offer':
-        console.log('📥 Offer received — sending answer');
-        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-        const answer = await pc.current.createAnswer();
-        await pc.current.setLocalDescription(answer);
-        sendSignal('answer', answer);
-        console.log('📤 Answer sent');
+    switch (signal?.type) {
+      case 'offer': {
+        console.log('📥 Offer received — creating & sending answer');
+        try {
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await pc.current.createAnswer();
+          await pc.current.setLocalDescription(answer);
+          sendSignal('answer', answer);
+          console.log('📤 Answer sent');
+        } catch (e) {
+          console.error('Failed handling offer/answer:', e);
+        }
         break;
+      }
 
-      case 'answer':
-        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-        console.log('✅ Answer set successfully');
+      case 'answer': {
+        try {
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          console.log('✅ Answer set successfully');
+        } catch (e) {
+          console.error('Failed to set remote answer:', e);
+        }
         break;
+      }
 
-      case 'candidate':
+      case 'candidate': {
         try {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
           console.log('✅ Added ICE candidate');
@@ -142,26 +202,38 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           console.error('ICE Candidate error:', e);
         }
         break;
+      }
 
-      case 'chat':
-        setChatMessages(prev => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
+      case 'chat': {
+        const messageText =
+          typeof signal.data === 'string'
+            ? signal.data
+            : signal.data?.text || JSON.stringify(signal.data);
+        console.log(`💬 Chat received from ${signal.sender}:`, messageText);
+        setChatMessages((prev) => [
+          ...prev,
+          { id: Date.now(), sender: signal.sender, text: messageText },
+        ]);
         break;
+      }
 
-      case 'code':
-        setCode(data);
+      case 'code': {
+        setCode(typeof data === 'string' ? data : JSON.stringify(data));
         break;
+      }
 
       default:
-        console.warn('Unknown signal type:', signal.type);
+        console.warn('Unknown signal type:', signal?.type);
         break;
     }
   };
 
   // 💬 Chat send
   const sendChat = () => {
-    if (!chatInput.trim()) return;
-    sendSignal('chat', chatInput.trim());
-    setChatMessages(prev => [...prev, { id: Date.now(), sender: userName, text: chatInput.trim() }]);
+    const text = chatInput.trim();
+    if (!text) return;
+    sendSignal('chat', text);
+    setChatMessages((prev) => [...prev, { id: Date.now(), sender: userName, text }]);
     setChatInput('');
   };
 
@@ -176,16 +248,16 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
   // 🎤 Mic toggle
   const toggleMic = () => {
-    const stream = localVideoRef.current?.srcObject;
-    if (stream) stream.getAudioTracks().forEach(t => (t.enabled = !micOn));
-    setMicOn(p => !p);
+    const stream = localStreamRef.current;
+    if (stream) stream.getAudioTracks().forEach((t) => (t.enabled = !micOn));
+    setMicOn((p) => !p);
   };
 
   // 🎥 Camera toggle
   const toggleCam = () => {
-    const stream = localVideoRef.current?.srcObject;
-    if (stream) stream.getVideoTracks().forEach(t => (t.enabled = !camOn));
-    setCamOn(p => !p);
+    const stream = localStreamRef.current;
+    if (stream) stream.getVideoTracks().forEach((t) => (t.enabled = !camOn));
+    setCamOn((p) => !p);
   };
 
   // 🖥️ Screen share toggle
@@ -194,31 +266,41 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
-        const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
-        sender.replaceTrack(screenTrack);
-        screenTrack.onended = () => toggleScreenShare();
-        setScreenSharing(true);
+        const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(screenTrack);
+          screenTrack.onended = () => toggleScreenShare();
+          setScreenSharing(true);
+        }
       } catch (err) {
         console.error('Screen share error:', err);
       }
     } else {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const videoTrack = stream.getVideoTracks()[0];
-      const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
-      sender.replaceTrack(videoTrack);
-      setScreenSharing(false);
+      try {
+        const camStream = localStreamRef.current || (await navigator.mediaDevices.getUserMedia({ video: true }));
+        if (!localStreamRef.current) localStreamRef.current = camStream;
+        const videoTrack = camStream.getVideoTracks()[0];
+        const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
+          setScreenSharing(false);
+        }
+      } catch (err) {
+        console.error('Restore camera error:', err);
+      }
     }
   };
 
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left the meeting`);
-    stompClient.current.deactivate();
-    pc.current.close();
+    try { stompClient.current?.deactivate(); } catch {}
+    try { pc.current?.close(); } catch {}
+    try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
     window.location.href = '/';
   };
 
   const toggleEditor = () => {
-    setEditorOpen(prev => {
+    setEditorOpen((prev) => {
       if (prev) setEditorMaximized(false);
       return !prev;
     });
@@ -238,7 +320,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
               <button
-                onClick={() => setEditorMaximized(prev => !prev)}
+                onClick={() => setEditorMaximized((prev) => !prev)}
                 className="p-1 rounded hover:bg-gray-600"
               >
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
@@ -287,7 +369,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {chatMessages.map(msg => (
+              {chatMessages.map((msg) => (
                 <div
                   key={msg.id}
                   className={`flex ${msg.sender === userName ? 'justify-end' : 'justify-start'}`}
@@ -310,8 +392,8 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
               <input
                 type="text"
                 value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendChat()}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendChat()}
                 placeholder="Type a message..."
                 className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
               />
@@ -363,7 +445,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         </div>
 
         <button
-          onClick={() => setChatOpen(prev => !prev)}
+          onClick={() => setChatOpen((prev) => !prev)}
           className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
         >
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
