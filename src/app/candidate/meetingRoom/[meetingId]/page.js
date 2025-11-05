@@ -16,7 +16,7 @@ const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const MeetingRoom = ({ userName: propName = 'User' }) => {
   const params = useParams();
   const roomId = String(params.meetingId || '');
-  const userName = useRef(`${propName}-${Math.floor(Math.random() * 10000)}`).current; // ✅ unique per device
+  const userName = useRef(`${propName}-${Math.floor(Math.random() * 10000)}`).current;
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -25,7 +25,9 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const [chatOpen, setChatOpen] = useState(true);
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
-  const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome to the meeting!' }]);
+  const [chatMessages, setChatMessages] = useState([
+    { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
+  ]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
 
@@ -34,15 +36,18 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const localStreamRef = useRef(null);
   const pc = useRef(null);
   const stompClient = useRef(null);
-  const codeUpdateTimeout = useRef(null);
-  const pendingCandidates = useRef([]);
+  const connectedRef = useRef(false);
   const startedRef = useRef(false);
   const isOfferer = useRef(false);
+  const offerCreated = useRef(false);
+  const joinedRef = useRef(false);
+  const pendingCandidates = useRef([]);
+  const codeUpdateTimeout = useRef(null);
 
-  // 🌐 Join room via REST
+  // 🌐 Join room safely once
   useEffect(() => {
-    if (!roomId) return;
-    let cancelled = false;
+    if (!roomId || joinedRef.current) return;
+    joinedRef.current = true;
 
     const joinRoom = async () => {
       try {
@@ -51,27 +56,27 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           role: 'CANDIDATE',
         });
         console.log('🧩 Joined room:', res.data);
-
-        if (res.data.count > 1) {
-          isOfferer.current = true;
-        }
-
-        if (!cancelled) await setupConnection();
+        if (res.data.count > 1) isOfferer.current = true;
+        await setupConnection();
       } catch (err) {
-        console.error('Room join failed:', err.response?.data || err.message);
+        console.error('❌ Room join failed:', err.response?.data || err.message);
       }
     };
 
     joinRoom();
 
     return () => {
-      cancelled = true;
       axiosInstance.post(`/rooms/${roomId}/leave`, { name: userName }).catch(() => {});
+      stompClient.current?.deactivate();
+      pc.current?.close();
+      localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
     };
-  }, [roomId]);
+  }, [roomId, userName]);
 
-  // ⚙️ Setup WebRTC + WebSocket
+  // ⚙️ Setup WebRTC + STOMP
   const setupConnection = async () => {
+    if (pc.current) return; // Prevent duplicate setup
+
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -97,7 +102,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       setRemoteCamOn(true);
     };
 
-    // Get camera/mic before offer
+    // Get local media
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
@@ -112,14 +117,15 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       return;
     }
 
-    // Setup WebSocket (HTTPS safe)
+    // Setup STOMP
     const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
     const socket = new SockJS(wsUrl);
     const client = new Client({
       webSocketFactory: () => socket,
-      reconnectDelay: 5000,
-      debug: (msg) => console.log('STOMP:', msg),
+      reconnectDelay: 4000,
+      debug: (msg) => console.log('🧠 STOMP:', msg),
       onConnect: () => {
+        connectedRef.current = true;
         console.log('✅ Connected to WebSocket');
 
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
@@ -134,38 +140,39 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
         sendSignal('join', { name: userName, time: Date.now() });
 
-        if (isOfferer.current) {
-          console.log('🟢 Creating offer...');
-          setTimeout(() => {
-            if (!pc.current.localDescription) createOffer();
-          }, 1000);
+        if (isOfferer.current && !offerCreated.current) {
+          offerCreated.current = true;
+          setTimeout(createOffer, 800); // wait for both peers
         }
       },
+      onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
+      onStompError: (frame) => console.error('❌ STOMP frame error:', frame.headers['message']),
     });
 
     stompClient.current = client;
     client.activate();
   };
 
-  // 📨 Send signal
+  // 📨 Send signal safely
   const sendSignal = (type, data) => {
-    if (!stompClient.current || !stompClient.current.connected) return;
+    if (!connectedRef.current || !stompClient.current?.connected) {
+      console.warn('⚠️ STOMP not connected yet, skipping signal:', type);
+      return;
+    }
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify({ sender: userName, type, data }),
     });
   };
 
-  // 📡 Handle signaling
+  // 📡 Handle signaling messages
   const handleSignal = async (signal) => {
     const data = signal.data;
     switch (signal.type) {
       case 'offer':
-        if (!startedRef.current) {
-          startedRef.current = true;
-          console.log('🔵 Received offer — creating answer');
-          await handleOffer(data);
-        }
+        if (offerCreated.current) return;
+        console.log('🔵 Received offer — creating answer');
+        await handleOffer(data);
         break;
 
       case 'answer':
@@ -191,7 +198,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         break;
 
       default:
-        console.warn('⚠️ Unknown signal:', signal.type);
+        console.warn('⚠️ Unknown signal type:', signal.type);
     }
   };
 
@@ -233,7 +240,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setChatInput('');
   };
 
-  // 💻 Code sync
+  // 💻 Code Sync
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
@@ -259,7 +266,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       try {
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const track = screen.getVideoTracks()[0];
-        const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+        const sender = pc.current.getSenders().find((s) => s.track?.kind === 'video');
         if (sender) {
           await sender.replaceTrack(track);
           track.onended = () => toggleScreenShare();
@@ -271,12 +278,13 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     } else {
       const cam = localStreamRef.current;
       const track = cam.getVideoTracks()[0];
-      const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const sender = pc.current.getSenders().find((s) => s.track?.kind === 'video');
       if (sender) await sender.replaceTrack(track);
       setScreenSharing(false);
     }
   };
 
+  // 📴 Leave meeting
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left`);
     stompClient.current?.deactivate();
@@ -304,8 +312,14 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
-            <Editor height="100%" theme="vs-dark" language="javascript" value={code} onChange={handleCodeChange}
-              options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }} />
+            <Editor
+              height="100%"
+              theme="vs-dark"
+              language="javascript"
+              value={code}
+              onChange={handleCodeChange}
+              options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }}
+            />
           </div>
         )}
 
