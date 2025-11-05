@@ -10,7 +10,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import Editor from '@monaco-editor/react';
 import axiosInstance from '@/utils/axiosInstance';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/context/AuthProvider';
 
 const RecruiterRoom = () => {
   const { user } = useAuth();
