@@ -80,10 +80,11 @@ const RecruiterSchedule = () => {
   };
 
   const canJoin = (schedule) => {
-    const scheduleTime = new Date(`${schedule.date} ${schedule.time}`);
-    const tenMinBefore = new Date(scheduleTime.getTime() - 10 * 60 * 1000);
-    const tenMinAfter = new Date(scheduleTime.getTime() + 10 * 60 * 1000);
-    return now >= tenMinBefore && now <= tenMinAfter;
+    // const scheduleTime = new Date(`${schedule.date} ${schedule.time}`);
+    // const tenMinBefore = new Date(scheduleTime.getTime() - 10 * 60 * 1000);
+    // const tenMinAfter = new Date(scheduleTime.getTime() + 10 * 60 * 1000);
+    // return now >= tenMinBefore && now <= tenMinAfter;
+    return true;
   };
 
   const handleJoin = (schedule) => {
