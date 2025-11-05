@@ -36,10 +36,12 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const localStreamRef = useRef(null);
   const pc = useRef(null);
   const stompClient = useRef(null);
+
   const connectedRef = useRef(false);
   const joinedRef = useRef(false);
-  const offerCreated = useRef(false);
   const isOfferer = useRef(false);
+  const offerInProgress = useRef(false);
+
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
 
@@ -87,19 +89,46 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           credential: 'efree',
         },
       ],
+      bundlePolicy: 'balanced',
+      rtcpMuxPolicy: 'require',
     });
-    pc.current.oniceconnectionstatechange = () => {
-    console.log('🧊 ICE state:', pc.current.iceConnectionState);
-    if (pc.current.iceConnectionState === 'connected') {
-      console.log('✅ Peer-to-peer connection established!');
-    } else if (pc.current.iceConnectionState === 'failed') {
-      console.warn('❌ ICE negotiation failed. TURN/STUN may be unreachable.');
-    }
-  };
 
+    // Pre-create transceivers so remote tracks arrive reliably even if muted
+    try {
+      pc.current.addTransceiver('video', { direction: 'sendrecv' });
+      pc.current.addTransceiver('audio', { direction: 'sendrecv' });
+    } catch {}
+
+    pc.current.oniceconnectionstatechange = () => {
+      const s = pc.current.iceConnectionState;
+      console.log('🧊 ICE state:', s);
+      if (s === 'connected' || s === 'completed') {
+        console.log('✅ Peer-to-peer connection established!');
+      } else if (s === 'disconnected') {
+        // Try a gentle ICE restart (often fixes brief drops)
+        try {
+          console.warn('⚠️ ICE disconnected — attempting ICE restart');
+          renegotiate(true);
+        } catch (e) {
+          console.error('ICE restart error:', e);
+        }
+      } else if (s === 'failed') {
+        // Hard restart
+        try {
+          console.warn('❌ ICE failed — forcing ICE restart');
+          renegotiate(true);
+        } catch (e) {
+          console.error('Hard ICE restart error:', e);
+        }
+      }
+    };
+
+    pc.current.onconnectionstatechange = () => {
+      console.log('🔗 PeerConnection state:', pc.current.connectionState);
+    };
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('CANDIDATE', event.candidate.toJSON());
+      if (event.candidate) sendSignal('candidate', event.candidate);
     };
 
     pc.current.ontrack = (event) => {
@@ -111,15 +140,42 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       setRemoteCamOn(true);
     };
 
+    // Negotiate when needed (safe offerer trigger)
+    pc.current.onnegotiationneeded = async () => {
+      // Only one side (second joiner) proactively offers
+      if (!isOfferer.current) return;
+      if (offerInProgress.current) return;
+      try {
+        offerInProgress.current = true;
+        await createOffer();
+      } finally {
+        offerInProgress.current = false;
+      }
+    };
+
     // Local Media
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 30 } },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play?.().catch(() => {});
       }
       stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
+
+      // Optional: hint lower latency / bandwidth
+      pc.current.getSenders().forEach(async (sender) => {
+        if (sender.track && sender.track.kind === 'video') {
+          try {
+            const params = sender.getParameters();
+            params.encodings = [{ maxBitrate: 800_000 }]; // ~800 kbps
+            await sender.setParameters(params);
+          } catch {}
+        }
+      });
     } catch (err) {
       console.error('❌ Media access error:', err);
       alert('Please allow camera and microphone access.');
@@ -139,6 +195,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           try {
             const signal = JSON.parse(msg.body);
+            // Ignore echoes from yourself
             if (signal.sender === userName) return;
             handleSignal(signal);
           } catch (e) {
@@ -148,21 +205,32 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
         sendSignal('join', { name: userName });
 
-        // 2nd user creates the offer
-        if (isOfferer.current && !offerCreated.current) {
-          offerCreated.current = true;
-          setTimeout(createOffer, 600);
+        // Second participant becomes offerer
+        // (If you want Recruiter to always offer, set isOfferer.current = (role==='RECRUITER') on join API)
+        if (isOfferer.current) {
+          // Let subscriptions settle
+          setTimeout(() => renegotiate(false), 400);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
-      onStompError: (frame) => console.error('❌ STOMP frame error:', frame.headers['message']),
+      onStompError: (frame) => console.error('❌ STOMP frame error:', frame.headers?.message),
     });
 
     stompClient.current = client;
     client.activate();
   };
 
-  // 📨 Send signal safely
+  const renegotiate = async (iceRestart = false) => {
+    if (!isOfferer.current) return; // only the offerer restarts/renegotiates
+    if (pc.current.signalingState !== 'stable') {
+      try { await pc.current.setLocalDescription({ type: 'rollback' }); } catch {}
+    }
+    const offer = await pc.current.createOffer({ iceRestart });
+    await pc.current.setLocalDescription(offer);
+    sendSignal('offer', offer);
+  };
+
+  // 📨 Send signal safely (normalized types)
   const sendSignal = (type, data) => {
     if (!connectedRef.current || !stompClient.current?.connected) return;
     stompClient.current.publish({
@@ -176,58 +244,61 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     const { type, data } = signal;
 
     switch (type) {
-      case 'offer':
+      case 'offer': {
         console.log('📩 Offer received');
-        await handleOffer(data);
+        try {
+          // Glare handling
+          if (pc.current.signalingState !== 'stable') {
+            await pc.current.setLocalDescription({ type: 'rollback' });
+          }
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await pc.current.createAnswer();
+          await pc.current.setLocalDescription(answer);
+          sendSignal('answer', answer);
+          await processPendingCandidates();
+        } catch (err) {
+          console.error('Answer error:', err);
+        }
         break;
-      case 'answer':
+      }
+      case 'answer': {
         if (!pc.current.remoteDescription) {
           console.log('📩 Answer received');
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          await processPendingCandidates();
+          try {
+            await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+            await processPendingCandidates();
+          } catch (err) {
+            console.error('Set remote answer error:', err);
+          }
         }
         break;
-      case 'CANDIDATE':
-        if (pc.current.remoteDescription) {
-          await pc.current.addIceCandidate(new RTCIceCandidate(data));
-        } else {
-          pendingCandidates.current.push(data);
+      }
+      case 'candidate': {
+        try {
+          if (pc.current.remoteDescription) {
+            await pc.current.addIceCandidate(new RTCIceCandidate(data));
+          } else {
+            pendingCandidates.current.push(data);
+          }
+        } catch (err) {
+          console.error('ICE add error:', err);
         }
         break;
+      }
       case 'chat':
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
       case 'code':
         setCode(data);
         break;
+      case 'renegotiate':
+        // If other side asks to renegotiate, let the offerer drive it
+        if (isOfferer.current) {
+          renegotiate(false);
+        }
+        break;
       default:
         console.warn('⚠️ Unknown signal type:', type);
-    }
-  };
-
-  // 💡 Offer/Answer
-  const createOffer = async () => {
-    try {
-      const offer = await pc.current.createOffer();
-      await pc.current.setLocalDescription(offer);
-      sendSignal('offer', offer);
-    } catch (err) {
-      console.error('Offer error:', err);
-    }
-  };
-
-  const handleOffer = async (offer) => {
-    try {
-      if (pc.current.signalingState !== 'stable') {
-        await pc.current.setLocalDescription({ type: 'rollback' });
-      }
-      await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.current.createAnswer();
-      await pc.current.setLocalDescription(answer);
-      sendSignal('answer', answer);
-      await processPendingCandidates();
-    } catch (err) {
-      console.error('Answer error:', err);
     }
   };
 
@@ -236,10 +307,24 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       try {
         await pc.current.addIceCandidate(new RTCIceCandidate(c));
       } catch (err) {
-        console.error('ICE add error:', err);
+        console.error('ICE add (queued) error:', err);
       }
     }
     pendingCandidates.current = [];
+  };
+
+  // 💡 Offer creator
+  const createOffer = async () => {
+    try {
+      if (pc.current.signalingState !== 'stable') {
+        await pc.current.setLocalDescription({ type: 'rollback' });
+      }
+      const offer = await pc.current.createOffer();
+      await pc.current.setLocalDescription(offer);
+      sendSignal('offer', offer);
+    } catch (err) {
+      console.error('Offer error:', err);
+    }
   };
 
   // 💬 Chat
@@ -277,6 +362,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       try {
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const track = screen.getVideoTracks()[0];
+        track.contentHint = 'motion';
         const sender = pc.current.getSenders().find((s) => s.track?.kind === 'video');
         if (sender) {
           await sender.replaceTrack(track);
