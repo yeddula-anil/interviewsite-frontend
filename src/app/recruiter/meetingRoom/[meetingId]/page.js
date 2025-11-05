@@ -9,12 +9,12 @@ import {
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import Editor from '@monaco-editor/react';
+import axiosInstance from '@/utils/axiosInstance'; // ✅ import your configured axios instance
 
 const RecruiterRoom = ({ userName = 'User' }) => {
   const params = useParams();
   const roomId = String(params.meetingId || '');
 
-  // UI states
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
@@ -23,13 +23,11 @@ const RecruiterRoom = ({ userName = 'User' }) => {
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
 
-  // Chat states
   const [chatMessages, setChatMessages] = useState([
     { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
   ]);
   const [chatInput, setChatInput] = useState('');
 
-  // Video & WebRTC refs
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -39,45 +37,39 @@ const RecruiterRoom = ({ userName = 'User' }) => {
   const isOfferer = useRef(false);
   const pendingCandidates = useRef([]);
 
-  // 🧩 First join the room via backend before signaling
+  // 🧩 Join room using axiosInstance
   useEffect(() => {
     if (!roomId) return;
 
     const joinRoom = async () => {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/join`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: userName, role: 'user' }),
+        const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
+          name: userName,
+          role: 'user',
         });
-        const data = await res.json();
-        console.log('🧩 Joined room:', data);
+        console.log('🧩 Joined room:', res.data);
 
-        // If another participant already exists → create offer
-        if (data.count > 1) {
+        if (res.data.count > 1) {
           console.log('🟢 Another participant exists — will create offer');
           isOfferer.current = true;
         }
 
-        setupConnection(); // Start STOMP + WebRTC
+        setupConnection();
       } catch (err) {
-        console.error('Room join failed:', err);
+        console.error('❌ Room join failed:', err.response?.data || err.message);
       }
     };
 
     joinRoom();
 
-    // Leave room when exiting
     return () => {
-      fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/leave`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: userName }),
-      }).catch(() => {});
+      axiosInstance
+        .post(`/rooms/${roomId}/leave`, { name: userName })
+        .catch(() => {});
     };
   }, [roomId]);
 
-  // ⚙️ Setup STOMP + WebRTC after joining
+  // ⚙️ Setup STOMP + WebRTC
   const setupConnection = () => {
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
@@ -109,7 +101,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     stompClient.current = client;
     client.activate();
 
-    // Setup WebRTC peer connection
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -134,7 +125,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
       setRemoteCamOn(true);
     };
 
-    // Initialize local stream
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -150,7 +140,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     })();
   };
 
-  // 🚀 Send signaling message
   const sendSignal = (type, data) => {
     if (!stompClient.current || !stompClient.current.connected) return;
     const signal = { sender: userName, type, data };
@@ -161,7 +150,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     console.log('📤 Sent signal:', type);
   };
 
-  // 📡 Handle signaling
   const handleSignal = async (signal) => {
     if (signal.sender === userName) return;
     const data = signal.data;
@@ -208,7 +196,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     }
   };
 
-  // 💡 Create offer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -220,7 +207,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     }
   };
 
-  // 💡 Handle offer and send answer
   const handleOffer = async (offer) => {
     try {
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
@@ -233,7 +219,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     }
   };
 
-  // 💬 Chat send
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -242,21 +227,18 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     setChatInput('');
   };
 
-  // 🎤 Mic toggle
   const toggleMic = () => {
     const stream = localVideoRef.current?.srcObject;
     if (stream) stream.getAudioTracks().forEach((t) => (t.enabled = !micOn));
     setMicOn((p) => !p);
   };
 
-  // 🎥 Camera toggle
   const toggleCam = () => {
     const stream = localVideoRef.current?.srcObject;
     if (stream) stream.getVideoTracks().forEach((t) => (t.enabled = !camOn));
     setCamOn((p) => !p);
   };
 
-  // 🖥️ Screen share toggle
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -284,7 +266,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     }
   };
 
-  // 🚪 Leave meeting
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left`);
     stompClient.current?.deactivate();
@@ -300,7 +281,7 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     });
   };
 
-  // 🖼️ UI (unchanged)
+  // 🖼️ UI unchanged
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">

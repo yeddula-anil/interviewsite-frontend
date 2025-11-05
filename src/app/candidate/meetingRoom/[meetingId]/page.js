@@ -9,6 +9,7 @@ import {
 } from 'react-icons/fa';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import axiosInstance from '@/utils/axiosInstance'; // ✅ import axiosInstance
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
@@ -27,7 +28,6 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
 
-  // Refs
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -38,45 +38,41 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const startedRef = useRef(false);
   const isOfferer = useRef(false);
 
-  // 🌐 Join room first
+  // 🌐 Join room with axiosInstance
   useEffect(() => {
     if (!roomId) return;
 
     const joinRoom = async () => {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/join`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: userName, role: 'user' }),
+        const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
+          name: userName,
+          role: 'user',
         });
-        const data = await res.json();
-        console.log('🧩 Joined room:', data);
+        console.log('🧩 Joined room:', res.data);
 
-        // If another user exists, this user becomes offer creator
-        if (data.count > 1) {
+        // If another user already exists → create offer
+        if (res.data.count > 1) {
           console.log('🟢 Another participant exists — will create offer');
           isOfferer.current = true;
         }
 
-        setupConnection(); // Now start WebSocket & WebRTC
+        setupConnection();
       } catch (err) {
-        console.error('Room join failed:', err);
+        console.error('Room join failed:', err.response?.data || err.message);
       }
     };
 
     joinRoom();
 
-    // On leave
+    // Leave room on unmount
     return () => {
-      fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/leave`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: userName }),
-      }).catch(() => {});
+      axiosInstance
+        .post(`/rooms/${roomId}/leave`, { name: userName })
+        .catch(() => {});
     };
   }, [roomId]);
 
-  // ⚙️ Setup STOMP & WebRTC after joining room
+  // ⚙️ Setup STOMP & WebRTC
   const setupConnection = () => {
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
