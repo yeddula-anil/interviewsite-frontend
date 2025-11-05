@@ -9,13 +9,14 @@ import {
 } from 'react-icons/fa';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
-import axiosInstance from '@/utils/axiosInstance'; // ✅ import axiosInstance
+import axiosInstance from '@/utils/axiosInstance';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
-const MeetingRoom = ({ userName = 'User' }) => {
+const MeetingRoom = ({ userName: propName = 'User' }) => {
   const params = useParams();
   const roomId = String(params.meetingId || '');
+  const userName = useRef(`${propName}-${Math.floor(Math.random() * 10000)}`).current; // ✅ unique per device
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -38,9 +39,10 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const startedRef = useRef(false);
   const isOfferer = useRef(false);
 
-  // 🌐 Join room with axiosInstance
+  // 🌐 Join room via REST
   useEffect(() => {
     if (!roomId) return;
+    let cancelled = false;
 
     const joinRoom = async () => {
       try {
@@ -50,13 +52,11 @@ const MeetingRoom = ({ userName = 'User' }) => {
         });
         console.log('🧩 Joined room:', res.data);
 
-        // If another user already exists → create offer
         if (res.data.count > 1) {
-          console.log('🟢 Another participant exists — will create offer');
           isOfferer.current = true;
         }
 
-        setupConnection();
+        if (!cancelled) await setupConnection();
       } catch (err) {
         console.error('Room join failed:', err.response?.data || err.message);
       }
@@ -64,54 +64,18 @@ const MeetingRoom = ({ userName = 'User' }) => {
 
     joinRoom();
 
-    // Leave room on unmount
     return () => {
-      axiosInstance
-        .post(`/rooms/${roomId}/leave`, { name: userName })
-        .catch(() => {});
+      cancelled = true;
+      axiosInstance.post(`/rooms/${roomId}/leave`, { name: userName }).catch(() => {});
     };
   }, [roomId]);
 
-  // ⚙️ Setup STOMP & WebRTC
-  const setupConnection = () => {
-    const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
-    const client = new Client({
-      webSocketFactory: () => socket,
-      reconnectDelay: 5000,
-      debug: (msg) => console.log('STOMP:', msg),
-      onConnect: async () => {
-        console.log('✅ Connected to WebSocket');
-
-        client.subscribe(`/topic/signal/${roomId}`, (msg) => {
-          try {
-            const signal = JSON.parse(msg.body);
-            console.log('📩 Received signal:', signal.type, 'from', signal.sender);
-            handleSignal(signal);
-          } catch (e) {
-            console.error('Failed to parse signal', e);
-          }
-        });
-
-        sendSignal('join', { name: userName, time: Date.now() });
-
-        if (isOfferer.current) {
-          setTimeout(() => {
-            if (!pc.current.localDescription) {
-              console.log('🟢 Creating offer (auto)');
-              createOffer();
-            }
-          }, 1000);
-        }
-      },
-    });
-
-    stompClient.current = client;
-    client.activate();
-
-    // --- WebRTC setup ---
+  // ⚙️ Setup WebRTC + WebSocket
+  const setupConnection = async () => {
     pc.current = new RTCPeerConnection({
       iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
         {
           urls: 'turn:relay1.expressturn.com:3478',
           username: 'efree',
@@ -133,18 +97,54 @@ const MeetingRoom = ({ userName = 'User' }) => {
       setRemoteCamOn(true);
     };
 
-    // Local media
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localStreamRef.current = stream;
+    // Get camera/mic before offer
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play?.().catch(() => {});
-        stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
-      } catch (err) {
-        console.error('❌ Media access error:', err);
       }
-    })();
+      stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
+    } catch (err) {
+      console.error('❌ Media access error:', err);
+      alert('Please allow camera and microphone access.');
+      return;
+    }
+
+    // Setup WebSocket (HTTPS safe)
+    const wsUrl = `${process.env.NEXT_PUBLIC_API_URL.replace('http', 'https')}/ws`;
+    const socket = new SockJS(wsUrl);
+    const client = new Client({
+      webSocketFactory: () => socket,
+      reconnectDelay: 5000,
+      debug: (msg) => console.log('STOMP:', msg),
+      onConnect: () => {
+        console.log('✅ Connected to WebSocket');
+
+        client.subscribe(`/topic/signal/${roomId}`, (msg) => {
+          try {
+            const signal = JSON.parse(msg.body);
+            console.log('📩 Received signal:', signal.type, 'from', signal.sender);
+            handleSignal(signal);
+          } catch (e) {
+            console.error('❌ Signal parse error:', e);
+          }
+        });
+
+        sendSignal('join', { name: userName, time: Date.now() });
+
+        if (isOfferer.current) {
+          console.log('🟢 Creating offer...');
+          setTimeout(() => {
+            if (!pc.current.localDescription) createOffer();
+          }, 1000);
+        }
+      },
+    });
+
+    stompClient.current = client;
+    client.activate();
   };
 
   // 📨 Send signal
@@ -154,19 +154,16 @@ const MeetingRoom = ({ userName = 'User' }) => {
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify({ sender: userName, type, data }),
     });
-    console.log('📤 Sent signal:', type);
   };
 
-  // ⚙️ Handle signaling
+  // 📡 Handle signaling
   const handleSignal = async (signal) => {
-    if (signal.sender === userName) return;
     const data = signal.data;
-
     switch (signal.type) {
       case 'offer':
         if (!startedRef.current) {
-          console.log('🔵 Received offer — creating answer');
           startedRef.current = true;
+          console.log('🔵 Received offer — creating answer');
           await handleOffer(data);
         }
         break;
@@ -174,7 +171,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
       case 'answer':
         console.log('✅ Received answer');
         await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-        processPendingCandidates();
+        await processPendingCandidates();
         break;
 
       case 'candidate':
@@ -194,11 +191,10 @@ const MeetingRoom = ({ userName = 'User' }) => {
         break;
 
       default:
-        console.warn('Unknown signal:', signal.type);
+        console.warn('⚠️ Unknown signal:', signal.type);
     }
   };
 
-  // 💡 Offer/Answer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -215,7 +211,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
       sendSignal('answer', answer);
-      processPendingCandidates();
+      await processPendingCandidates();
     } catch (err) {
       console.error('Answer error:', err);
     }
@@ -241,9 +237,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
-    codeUpdateTimeout.current = setTimeout(() => {
-      sendSignal('code', newCode);
-    }, 400);
+    codeUpdateTimeout.current = setTimeout(() => sendSignal('code', newCode), 300);
   };
 
   // 🎤 Mic / 🎥 Cam
@@ -298,7 +292,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
     });
   };
 
-  // 🎨 UI unchanged
+  // 🎨 UI (unchanged)
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
@@ -357,9 +351,14 @@ const MeetingRoom = ({ userName = 'User' }) => {
               ))}
             </div>
             <div className="flex p-2 border-t border-gray-700">
-              <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="Type a message..."
-                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none" />
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+                placeholder="Type a message..."
+                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
+              />
               <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700">
                 <FaPaperPlane />
               </button>
