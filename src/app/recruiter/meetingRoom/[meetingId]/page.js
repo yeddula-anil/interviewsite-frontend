@@ -10,7 +10,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import Editor from '@monaco-editor/react';
 
-const RecruiterRoom = ({ userName = 'Recruiter' }) => {
+const RecruiterRoom = ({ userName = 'User' }) => {
   const params = useParams();
   const roomId = String(params.meetingId || '');
 
@@ -36,6 +36,8 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const pc = useRef(null);
   const stompClient = useRef(null);
   const startedRef = useRef(false);
+  const isOfferer = useRef(false);
+  const pendingCandidates = useRef([]);
 
   // 🧩 Initialize WebSocket + WebRTC
   useEffect(() => {
@@ -48,30 +50,13 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       debug: (msg) => console.log('STOMP:', msg),
       onConnect: async () => {
         console.log('✅ Connected to WebSocket');
-
-        // Start local camera immediately
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-          localStreamRef.current = stream;
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            const play = localVideoRef.current.play?.();
-            if (play && typeof play.then === 'function') play.catch(() => {});
-          }
-          stream.getTracks().forEach((track) => pc.current.addTrack(track, stream));
-        } catch (err) {
-          console.error('Error accessing camera/mic:', err);
-        }
-
-        // Subscribe to signaling topic
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
           console.log('📩 Received signal:', signal.type, 'from', signal.sender);
           handleSignal(signal);
         });
 
-        // Announce presence
-        sendSignal('join', `${userName} joined the meeting`);
+        sendSignal('join', { name: userName, time: Date.now() });
       },
     });
 
@@ -88,18 +73,10 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           credential: 'efree',
         },
       ],
-      iceCandidatePoolSize: 8,
     });
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('🧊 Local ICE candidate → sending');
-        sendSignal('candidate', event.candidate);
-      }
-    };
-
-    pc.current.onconnectionstatechange = () => {
-      console.log('🔗 PC state:', pc.current.connectionState);
+      if (event.candidate) sendSignal('candidate', event.candidate);
     };
 
     pc.current.ontrack = (event) => {
@@ -112,16 +89,102 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       setRemoteCamOn(true);
     };
 
-    return () => {
+    // Initialize local stream
+    (async () => {
       try {
-        client.deactivate();
-        pc.current.close();
-      } catch {}
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localStreamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          const play = localVideoRef.current.play?.();
+          if (play && typeof play.then === 'function') play.catch(() => {});
+        }
+        stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
+      } catch (err) {
+        console.error('Media error:', err);
+      }
+    })();
+
+    return () => {
+      try { client.deactivate(); } catch {}
+      try { pc.current?.close(); } catch {}
+      try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  // 🧠 Create offer when candidate joins
+  // 🚀 Send signaling message
+  const sendSignal = (type, data) => {
+    if (!stompClient.current || !stompClient.current.connected) return;
+    const signal = { sender: userName, type, data };
+    stompClient.current.publish({
+      destination: `/app/signal/${roomId}`,
+      body: JSON.stringify(signal),
+    });
+    console.log('📤 Sent signal:', type);
+  };
+
+  // 📡 Handle signaling
+  const handleSignal = async (signal) => {
+    if (signal.sender === userName) return;
+    const data = signal.data;
+
+    switch (signal.type) {
+      case 'join':
+        if (!startedRef.current) {
+          console.log('🟢 You are offer creator');
+          startedRef.current = true;
+          isOfferer.current = true;
+          await createOffer();
+        }
+        break;
+
+      case 'offer':
+        if (!startedRef.current) {
+          console.log('🔵 Received offer — sending answer');
+          startedRef.current = true;
+          await handleOffer(data);
+        }
+        break;
+
+      case 'answer':
+        if (isOfferer.current) {
+          console.log('✅ Received answer');
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          for (const c of pendingCandidates.current) {
+            await pc.current.addIceCandidate(new RTCIceCandidate(c));
+          }
+          pendingCandidates.current = [];
+        }
+        break;
+
+      case 'candidate':
+        if (pc.current.remoteDescription) {
+          try {
+            await pc.current.addIceCandidate(new RTCIceCandidate(data));
+            console.log('✅ Added ICE candidate');
+          } catch (e) {
+            console.error('ICE error:', e);
+          }
+        } else {
+          pendingCandidates.current.push(data);
+          console.log('🕓 Buffered ICE candidate');
+        }
+        break;
+
+      case 'chat':
+        const msg =
+          typeof data === 'string'
+            ? data
+            : data?.text || JSON.stringify(data);
+        setChatMessages((p) => [...p, { id: Date.now(), sender: signal.sender, text: msg }]);
+        break;
+
+      default:
+        console.warn('Unknown signal type:', signal.type);
+    }
+  };
+
+  // 💡 Create offer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -129,72 +192,20 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       sendSignal('offer', offer);
       console.log('📤 Offer sent');
     } catch (err) {
-      console.error('Error creating offer:', err);
+      console.error('Offer error:', err);
     }
   };
 
-  // 📨 Send signaling messages
-  const sendSignal = (type, data) => {
-    if (!stompClient.current || !stompClient.current.connected) return;
-    const signalMessage = {
-      sender: userName,
-      type,
-      data,
-      role: 'recruiter',
-    };
-    stompClient.current.publish({
-      destination: `/app/signal/${roomId}`,
-      body: JSON.stringify(signalMessage),
-    });
-    console.log('📤 Sent signal:', type);
-  };
-
-  // 🧩 Handle incoming WebRTC & chat signals
-  const handleSignal = async (signal) => {
-    if (signal.sender === userName) return;
-    const data = signal.data;
-
-    switch (signal.type) {
-      case 'join':
-        if (signal.role === 'candidate' && !startedRef.current) {
-          console.log('🎥 Candidate joined — creating offer...');
-          startedRef.current = true;
-          await createOffer();
-        }
-        break;
-
-      case 'answer':
-        try {
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          console.log('✅ Answer received and set');
-        } catch (e) {
-          console.error('Failed to set remote answer:', e);
-        }
-        break;
-
-      case 'candidate':
-        try {
-          await pc.current.addIceCandidate(new RTCIceCandidate(data));
-          console.log('✅ Added ICE candidate');
-        } catch (e) {
-          console.error('ICE Candidate error:', e);
-        }
-        break;
-
-      case 'chat': {
-        const messageText =
-          typeof signal.data === 'string'
-            ? signal.data
-            : signal.data?.text || JSON.stringify(signal.data);
-        setChatMessages((prev) => [
-          ...prev,
-          { id: Date.now(), sender: signal.sender, text: messageText },
-        ]);
-        break;
-      }
-
-      default:
-        console.warn('Unknown signal type:', signal.type);
+  // 💡 Handle offer and send answer
+  const handleOffer = async (offer) => {
+    try {
+      await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.current.createAnswer();
+      await pc.current.setLocalDescription(answer);
+      sendSignal('answer', answer);
+      console.log('📤 Answer sent');
+    } catch (err) {
+      console.error('Answer error:', err);
     }
   };
 
@@ -225,42 +236,43 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
+        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const track = screen.getVideoTracks()[0];
         const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
         if (sender) {
-          sender.replaceTrack(screenTrack);
-          screenTrack.onended = () => toggleScreenShare();
+          await sender.replaceTrack(track);
+          track.onended = () => toggleScreenShare();
           setScreenSharing(true);
         }
       } catch (err) {
         console.error('Screen share error:', err);
       }
     } else {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const videoTrack = stream.getVideoTracks()[0];
-      const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) {
-        sender.replaceTrack(videoTrack);
+      try {
+        const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const camTrack = camStream.getVideoTracks()[0];
+        const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) await sender.replaceTrack(camTrack);
         setScreenSharing(false);
+      } catch (err) {
+        console.error('Restore cam error:', err);
       }
     }
   };
 
   // 🚪 Leave meeting
   const leaveMeeting = () => {
-    sendSignal('leave', `${userName} left the meeting`);
-    try {
-      stompClient.current?.deactivate();
-      pc.current?.close();
-    } catch {}
+    sendSignal('leave', `${userName} left`);
+    try { stompClient.current?.deactivate(); } catch {}
+    try { pc.current?.close(); } catch {}
+    try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
     window.location.href = '/';
   };
 
   const toggleEditor = () => {
-    setEditorOpen((prev) => {
-      if (prev) setEditorMaximized(false);
-      return !prev;
+    setEditorOpen((p) => {
+      if (p) setEditorMaximized(false);
+      return !p;
     });
   };
 
@@ -268,7 +280,6 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {/* Code Editor */}
         {editorOpen && (
           <div className={`${editorMaximized ? 'w-full' : 'w-1/4'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
@@ -294,7 +305,6 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           </div>
         )}
 
-        {/* Video Section */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
@@ -302,7 +312,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-500">
                 <FaUserCircle size={120} />
-                <p className="text-lg mt-2">Waiting for candidate...</p>
+                <p className="text-lg mt-2">Waiting for others...</p>
               </div>
             )}
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
@@ -317,7 +327,6 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           </div>
         )}
 
-        {/* Chat Section */}
         {!editorMaximized && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
@@ -351,19 +360,16 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
         </button>
 
         <div className="flex justify-center gap-4">
-          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`} title={micOn ? 'Mute' : 'Unmute'}>
+          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
           </button>
-
-          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`} title={camOn ? 'Turn camera off' : 'Turn camera on'}>
+          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {camOn ? <FaVideo /> : <FaVideoSlash />}
           </button>
-
-          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`} title="Toggle screen share">
+          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}>
             <FaDesktop />
           </button>
-
-          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700" title="Leave Meeting">
+          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700">
             <FaPhoneSlash />
           </button>
         </div>
