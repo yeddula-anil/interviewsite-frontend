@@ -31,7 +31,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
-  const [isConnecting, setIsConnecting] = useState(true); // ✅ Loading state
+  const [isConnecting, setIsConnecting] = useState(true);
 
   // Refs
   const localVideoRef = useRef(null);
@@ -46,7 +46,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
 
-  // 🔹 Join room once
+  // 🔹 Join Room Once
   useEffect(() => {
     if (!roomId || joinedRef.current) return;
     joinedRef.current = true;
@@ -66,10 +66,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     };
 
     joinRoom();
-
-    return () => {
-      leaveCleanup();
-    };
+    return () => leaveCleanup();
   }, [roomId, userName]);
 
   // ⚙️ Setup WebRTC + STOMP
@@ -89,12 +86,15 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       ],
     });
 
-    // 🔗 Connection status
+    // 👇 Pre-create transceivers (ensure remote track delivery)
+    pc.current.addTransceiver('video', { direction: 'sendrecv' });
+    pc.current.addTransceiver('audio', { direction: 'sendrecv' });
+
     pc.current.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.current.connectionState);
       if (pc.current.connectionState === 'connected') {
-        setIsConnecting(false);
         console.log('✅ Peer connected');
+        setIsConnecting(false);
       } else if (
         pc.current.connectionState === 'failed' ||
         pc.current.connectionState === 'disconnected'
@@ -118,25 +118,25 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       setIsConnecting(false);
     };
 
-    // 🧩 Local Media
+    // 🧩 Local Media Setup (before signaling)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: 30 },
         audio: true,
       });
       localStreamRef.current = stream;
+      stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play?.().catch(() => {});
       }
-      stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
     } catch (err) {
       console.error('❌ Media access error:', err);
       alert('Please allow camera and microphone permissions.');
       return;
     }
 
-    // 🧠 STOMP setup
+    // 🧠 STOMP Setup
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
@@ -160,7 +160,8 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          setTimeout(createOffer, 600);
+          // 👇 Wait to ensure remote subscribed + tracks ready
+          setTimeout(createOffer, 1000);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
@@ -172,7 +173,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     client.activate();
   };
 
-  // 📨 Send signal
+  // 📨 Send Signal
   const sendSignal = (type, data) => {
     if (!connectedRef.current || !stompClient.current?.connected) return;
     stompClient.current.publish({
@@ -181,7 +182,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     });
   };
 
-  // 📡 Handle incoming signals
+  // 📡 Handle Incoming Signals
   const handleSignal = async (signal) => {
     const type = signal.type?.toUpperCase();
     const data = signal.data;
@@ -220,7 +221,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
   };
 
-  // 💡 Offer/Answer handlers
+  // 💡 Offer/Answer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -266,7 +267,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setChatInput('');
   };
 
-  // 💻 Code sync
+  // 💻 Code Sync
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
@@ -286,7 +287,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setCamOn((p) => !p);
   };
 
-  // 🖥 Screen share
+  // 🖥 Screen Share
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -310,7 +311,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
   };
 
-  // 📴 Leave meeting
+  // 📴 Leave
   const leaveMeeting = () => {
     sendSignal('LEAVE', `${userName} left`);
     leaveCleanup();
@@ -358,7 +359,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {/* ✅ Loader while connecting */}
+            {/* ✅ Loader */}
             {isConnecting && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Connecting...

@@ -30,7 +30,7 @@ const RecruiterRoom = () => {
     { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
   ]);
   const [chatInput, setChatInput] = useState('');
-  const [isConnecting, setIsConnecting] = useState(true); // ✅ new state for loading indicator
+  const [isConnecting, setIsConnecting] = useState(true);
 
   // Refs
   const localVideoRef = useRef(null);
@@ -64,13 +64,10 @@ const RecruiterRoom = () => {
     };
 
     joinRoom();
-
-    return () => {
-      leaveCleanup();
-    };
+    return () => leaveCleanup();
   }, [roomId, userName]);
 
-  // 🔧 Setup WebRTC + STOMP
+  // ⚙️ Setup WebRTC + STOMP
   const setupConnection = async () => {
     if (pc.current) return;
 
@@ -88,14 +85,19 @@ const RecruiterRoom = () => {
       ],
     });
 
-    // connection state
+    // Pre-create transceivers for reliable remote track
+    pc.current.addTransceiver('video', { direction: 'sendrecv' });
+    pc.current.addTransceiver('audio', { direction: 'sendrecv' });
+
     pc.current.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.current.connectionState);
       if (pc.current.connectionState === 'connected') {
-        setIsConnecting(false);
         console.log('✅ Peer-to-peer connection established!');
-      }
-      if (pc.current.connectionState === 'failed' || pc.current.connectionState === 'disconnected') {
+        setIsConnecting(false);
+      } else if (
+        pc.current.connectionState === 'failed' ||
+        pc.current.connectionState === 'disconnected'
+      ) {
         console.warn('⚠️ Connection lost or failed.');
         setIsConnecting(true);
       }
@@ -110,6 +112,7 @@ const RecruiterRoom = () => {
     };
 
     pc.current.ontrack = (event) => {
+      console.log('🎥 Remote track received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         remoteVideoRef.current.play?.().catch(() => {});
@@ -118,6 +121,7 @@ const RecruiterRoom = () => {
       }
     };
 
+    // 🧩 Local Media setup before signaling
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
@@ -156,7 +160,8 @@ const RecruiterRoom = () => {
 
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          setTimeout(createOffer, 600);
+          // Delay offer to ensure both peers subscribed
+          setTimeout(createOffer, 1000);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
@@ -167,7 +172,7 @@ const RecruiterRoom = () => {
     client.activate();
   };
 
-  // 📨 Send signal
+  // 📨 Send Signal
   const sendSignal = (type, data) => {
     if (!connectedRef.current || !stompClient.current?.connected) return;
     stompClient.current.publish({
@@ -176,7 +181,7 @@ const RecruiterRoom = () => {
     });
   };
 
-  // 📡 Handle incoming signals
+  // 📡 Handle Incoming Signals
   const handleSignal = async (signal) => {
     const type = signal.type?.toUpperCase();
     const data = signal.data;
@@ -209,7 +214,7 @@ const RecruiterRoom = () => {
     }
   };
 
-  // 💡 Offer/Answer
+  // 💡 Offer/Answer Handlers
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -223,6 +228,9 @@ const RecruiterRoom = () => {
 
   const handleOffer = async (offer) => {
     try {
+      if (pc.current.signalingState !== 'stable') {
+        await pc.current.setLocalDescription({ type: 'rollback' });
+      }
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
@@ -317,16 +325,11 @@ const RecruiterRoom = () => {
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
         {editorOpen && (
           <div
-            className={`${
-              editorMaximized ? 'w-full' : 'w-1/4'
-            } bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
+            className={`${editorMaximized ? 'w-full' : 'w-1/4'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
           >
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
-              <button
-                onClick={() => setEditorMaximized((prev) => !prev)}
-                className="p-1 rounded hover:bg-gray-600"
-              >
+              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600">
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
@@ -348,7 +351,7 @@ const RecruiterRoom = () => {
 
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {/* ✅ Show loader in center if connecting */}
+            {/* ✅ Loader while connecting */}
             {isConnecting && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Connecting...
@@ -356,12 +359,7 @@ const RecruiterRoom = () => {
             )}
 
             {remoteCamOn && !isConnecting ? (
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover rounded-lg"
-              />
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
             ) : (
               !isConnecting && (
                 <div className="flex flex-col items-center justify-center text-gray-500">
@@ -373,13 +371,7 @@ const RecruiterRoom = () => {
 
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
               {camOn ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
-                />
+                <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-400">
                   <FaUserCircle size={50} />
@@ -394,12 +386,7 @@ const RecruiterRoom = () => {
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
             <div className="flex-1 overflow-y-auto p-2 space-y-2">
               {chatMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`p-2 rounded ${
-                    msg.sender === userName ? 'bg-teal-800/30 ml-auto' : 'bg-gray-700/50'
-                  }`}
-                >
+                <div key={msg.id} className={`p-2 rounded ${msg.sender === userName ? 'bg-teal-800/30 ml-auto' : 'bg-gray-700/50'}`}>
                   <div className="text-xs text-gray-300 font-medium">{msg.sender}</div>
                   <div className="text-sm">{msg.text}</div>
                 </div>
@@ -414,10 +401,7 @@ const RecruiterRoom = () => {
                 placeholder="Type a message..."
                 className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
               />
-              <button
-                onClick={sendChat}
-                className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700"
-              >
+              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700">
                 <FaPaperPlane />
               </button>
             </div>
@@ -426,50 +410,26 @@ const RecruiterRoom = () => {
       </div>
 
       <div className="flex justify-between items-center mt-4">
-        <button
-          onClick={toggleEditor}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={toggleEditor} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
           <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
 
         <div className="flex justify-center gap-4">
-          <button
-            onClick={toggleMic}
-            className={`p-3 rounded-full border ${
-              micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
-            }`}
-          >
+          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
           </button>
-          <button
-            onClick={toggleCam}
-            className={`p-3 rounded-full border ${
-              camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
-            }`}
-          >
+          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {camOn ? <FaVideo /> : <FaVideoSlash />}
           </button>
-          <button
-            onClick={toggleScreenShare}
-            className={`p-3 rounded-full border ${
-              screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'
-            }`}
-          >
+          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}>
             <FaDesktop />
           </button>
-          <button
-            onClick={leaveMeeting}
-            className="p-3 rounded-full bg-red-600 hover:bg-red-700"
-          >
+          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700">
             <FaPhoneSlash />
           </button>
         </div>
 
-        <button
-          onClick={() => setChatOpen((prev) => !prev)}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>
