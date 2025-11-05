@@ -48,7 +48,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       try {
         const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
           name: userName,
-          role: 'user',
+          role: 'CANDIDATE',
         });
         console.log('🧩 Joined room:', res.data);
 
@@ -113,7 +113,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
 
     // Setup WebSocket (HTTPS safe)
-    const wsUrl = `${process.env.NEXT_PUBLIC_API_URL.replace('http', 'https')}/ws`;
+    const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
     const socket = new SockJS(wsUrl);
     const client = new Client({
       webSocketFactory: () => socket,

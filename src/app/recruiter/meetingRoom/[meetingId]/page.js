@@ -46,7 +46,7 @@ const RecruiterRoom = ({ userName: propName = 'User' }) => {
       try {
         const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
           name: userName,
-          role: 'user',
+          role: 'RECRUITER',
         });
         console.log('🧩 Joined room:', res.data);
 
@@ -111,7 +111,7 @@ const RecruiterRoom = ({ userName: propName = 'User' }) => {
     }
 
     // STOMP setup
-    const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL.replace('http', 'https')}/ws`);
+    const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 4000,
