@@ -50,12 +50,17 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           const signal = JSON.parse(msg.body);
           handleSignal(signal);
         });
+
+        // Announce that candidate joined
+        sendSignal('join', `${userName} joined the meeting`);
       },
     });
     stompClient.current.activate();
 
     // 🎥 Setup WebRTC
-    pc.current = new RTCPeerConnection();
+    pc.current = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
 
     pc.current.onicecandidate = (event) => {
       if (event.candidate) sendSignal('candidate', event.candidate);
@@ -106,6 +111,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
     switch (signal.type) {
       case 'offer':
+        console.log('📥 Offer received — sending answer');
         await pc.current.setRemoteDescription(new RTCSessionDescription(data));
         const answer = await pc.current.createAnswer();
         await pc.current.setLocalDescription(answer);
@@ -155,11 +161,49 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
     }, 400);
   };
 
-  // 🔘 Controls
-  const toggleMic = () => setMicOn(p => !p);
-  const toggleCam = () => setCamOn(p => !p);
-  const toggleScreenShare = () => setScreenSharing(p => !p);
-  const leaveMeeting = () => (window.location.href = '/');
+  // 🎤 Mic toggle
+  const toggleMic = () => {
+    const stream = localVideoRef.current?.srcObject;
+    if (stream) stream.getAudioTracks().forEach(t => (t.enabled = !micOn));
+    setMicOn(p => !p);
+  };
+
+  // 🎥 Camera toggle
+  const toggleCam = () => {
+    const stream = localVideoRef.current?.srcObject;
+    if (stream) stream.getVideoTracks().forEach(t => (t.enabled = !camOn));
+    setCamOn(p => !p);
+  };
+
+  // 🖥️ Screen share toggle
+  const toggleScreenShare = async () => {
+    if (!screenSharing) {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
+        sender.replaceTrack(screenTrack);
+        screenTrack.onended = () => toggleScreenShare();
+        setScreenSharing(true);
+      } catch (err) {
+        console.error('Screen share error:', err);
+      }
+    } else {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const videoTrack = stream.getVideoTracks()[0];
+      const sender = pc.current.getSenders().find(s => s.track.kind === 'video');
+      sender.replaceTrack(videoTrack);
+      setScreenSharing(false);
+    }
+  };
+
+  const leaveMeeting = () => {
+    sendSignal('leave', `${userName} left the meeting`);
+    stompClient.current.deactivate();
+    pc.current.close();
+    window.location.href = '/';
+  };
+
   const toggleEditor = () => {
     setEditorOpen(prev => {
       if (prev) setEditorMaximized(false);
@@ -168,7 +212,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
   };
 
   // ============================
-  // 🎨 UI SECTION
+  // 🎨 UI SECTION (unchanged)
   // ============================
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
@@ -208,7 +252,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-lg" />
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-500">
                 <FaUserCircle size={120} />

@@ -33,6 +33,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const remoteVideoRef = useRef(null);
   const pc = useRef(null);
   const stompClient = useRef(null);
+  const startedRef = useRef(false); // prevent multiple offers
 
   // 🧩 Initialize WebSocket + WebRTC
   useEffect(() => {
@@ -41,13 +42,17 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       webSocketFactory: () => socket,
       reconnectDelay: 5000,
       debug: (msg) => console.log('STOMP:', msg),
-      onConnect: async () => {
+      onConnect: () => {
         console.log('✅ Connected to WebSocket');
+
+        // Subscribe to signaling topic
         stompClient.current.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
           handleSignal(signal);
         });
-        await initLocalStream(); // wait until connected before sending offer
+
+        // Announce presence
+        sendSignal('join', `${userName} joined the meeting`);
       },
     });
 
@@ -57,8 +62,6 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        // Optional TURN server
-        // { urls: 'turn:your-turn-server', username: 'user', credential: 'pass' },
       ],
     });
 
@@ -87,6 +90,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       sendSignal('offer', offer);
+      console.log('📤 Offer sent');
     } catch (err) {
       console.error('Error accessing media devices:', err);
     }
@@ -113,9 +117,19 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     const data = signal.data;
 
     switch (signal.type) {
+      case 'join':
+        if (signal.role === 'candidate' && !startedRef.current) {
+          console.log('🎥 Candidate joined — starting offer');
+          startedRef.current = true;
+          await initLocalStream();
+        }
+        break;
+
       case 'answer':
         await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+        console.log('✅ Answer received and set');
         break;
+
       case 'candidate':
         try {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
@@ -123,9 +137,11 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           console.error('ICE Candidate error:', e);
         }
         break;
+
       case 'chat':
         setChatMessages(prev => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
+
       default:
         console.warn('Unknown signal type:', signal.type);
     }
@@ -142,14 +158,14 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   // 🎤 Mic toggle
   const toggleMic = () => {
     const stream = localVideoRef.current.srcObject;
-    if (stream) stream.getAudioTracks().forEach(track => track.enabled = !micOn);
+    if (stream) stream.getAudioTracks().forEach(track => (track.enabled = !micOn));
     setMicOn(prev => !prev);
   };
 
   // 🎥 Camera toggle
   const toggleCam = () => {
     const stream = localVideoRef.current.srcObject;
-    if (stream) stream.getVideoTracks().forEach(track => track.enabled = !camOn);
+    if (stream) stream.getVideoTracks().forEach(track => (track.enabled = !camOn));
     setCamOn(prev => !prev);
   };
 
@@ -177,6 +193,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
 
   // 🚪 Leave meeting
   const leaveMeeting = () => {
+    sendSignal('leave', `${userName} left the meeting`);
     stompClient.current.deactivate();
     pc.current.close();
     window.location.href = '/';
@@ -189,7 +206,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     });
   };
 
-  // 🖼️ UI
+  // 🖼️ UI (unchanged)
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
@@ -210,7 +227,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-lg" />
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-500">
                 <FaUserCircle size={120} />
