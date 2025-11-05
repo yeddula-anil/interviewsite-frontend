@@ -39,10 +39,46 @@ const RecruiterRoom = ({ userName = 'User' }) => {
   const isOfferer = useRef(false);
   const pendingCandidates = useRef([]);
 
-  // 🧩 Initialize WebSocket + WebRTC
+  // 🧩 First join the room via backend before signaling
   useEffect(() => {
     if (!roomId) return;
 
+    const joinRoom = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: userName, role: 'user' }),
+        });
+        const data = await res.json();
+        console.log('🧩 Joined room:', data);
+
+        // If another participant already exists → create offer
+        if (data.count > 1) {
+          console.log('🟢 Another participant exists — will create offer');
+          isOfferer.current = true;
+        }
+
+        setupConnection(); // Start STOMP + WebRTC
+      } catch (err) {
+        console.error('Room join failed:', err);
+      }
+    };
+
+    joinRoom();
+
+    // Leave room when exiting
+    return () => {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: userName }),
+      }).catch(() => {});
+    };
+  }, [roomId]);
+
+  // ⚙️ Setup STOMP + WebRTC after joining
+  const setupConnection = () => {
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
@@ -50,6 +86,7 @@ const RecruiterRoom = ({ userName = 'User' }) => {
       debug: (msg) => console.log('STOMP:', msg),
       onConnect: async () => {
         console.log('✅ Connected to WebSocket');
+
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
           console.log('📩 Received signal:', signal.type, 'from', signal.sender);
@@ -57,13 +94,22 @@ const RecruiterRoom = ({ userName = 'User' }) => {
         });
 
         sendSignal('join', { name: userName, time: Date.now() });
+
+        if (isOfferer.current) {
+          setTimeout(() => {
+            if (!pc.current.localDescription) {
+              console.log('🟢 Creating offer automatically');
+              createOffer();
+            }
+          }, 1000);
+        }
       },
     });
 
     stompClient.current = client;
     client.activate();
 
-    // Setup WebRTC
+    // Setup WebRTC peer connection
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -83,8 +129,7 @@ const RecruiterRoom = ({ userName = 'User' }) => {
       console.log('🎥 Remote track received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        const play = remoteVideoRef.current.play?.();
-        if (play && typeof play.then === 'function') play.catch(() => {});
+        remoteVideoRef.current.play?.().catch(() => {});
       }
       setRemoteCamOn(true);
     };
@@ -96,21 +141,14 @@ const RecruiterRoom = ({ userName = 'User' }) => {
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          const play = localVideoRef.current.play?.();
-          if (play && typeof play.then === 'function') play.catch(() => {});
+          localVideoRef.current.play?.().catch(() => {});
         }
         stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
       } catch (err) {
         console.error('Media error:', err);
       }
     })();
-
-    return () => {
-      try { client.deactivate(); } catch {}
-      try { pc.current?.close(); } catch {}
-      try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
-    };
-  }, [roomId]);
+  };
 
   // 🚀 Send signaling message
   const sendSignal = (type, data) => {
@@ -129,15 +167,6 @@ const RecruiterRoom = ({ userName = 'User' }) => {
     const data = signal.data;
 
     switch (signal.type) {
-      case 'join':
-        if (!startedRef.current) {
-          console.log('🟢 You are offer creator');
-          startedRef.current = true;
-          isOfferer.current = true;
-          await createOffer();
-        }
-        break;
-
       case 'offer':
         if (!startedRef.current) {
           console.log('🔵 Received offer — sending answer');
@@ -147,14 +176,12 @@ const RecruiterRoom = ({ userName = 'User' }) => {
         break;
 
       case 'answer':
-        if (isOfferer.current) {
-          console.log('✅ Received answer');
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          for (const c of pendingCandidates.current) {
-            await pc.current.addIceCandidate(new RTCIceCandidate(c));
-          }
-          pendingCandidates.current = [];
+        console.log('✅ Received answer');
+        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+        for (const c of pendingCandidates.current) {
+          await pc.current.addIceCandidate(new RTCIceCandidate(c));
         }
+        pendingCandidates.current = [];
         break;
 
       case 'candidate':
@@ -172,10 +199,7 @@ const RecruiterRoom = ({ userName = 'User' }) => {
         break;
 
       case 'chat':
-        const msg =
-          typeof data === 'string'
-            ? data
-            : data?.text || JSON.stringify(data);
+        const msg = typeof data === 'string' ? data : data?.text || JSON.stringify(data);
         setChatMessages((p) => [...p, { id: Date.now(), sender: signal.sender, text: msg }]);
         break;
 
@@ -263,9 +287,9 @@ const RecruiterRoom = ({ userName = 'User' }) => {
   // 🚪 Leave meeting
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left`);
-    try { stompClient.current?.deactivate(); } catch {}
-    try { pc.current?.close(); } catch {}
-    try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
+    stompClient.current?.deactivate();
+    pc.current?.close();
+    localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
     window.location.href = '/';
   };
 

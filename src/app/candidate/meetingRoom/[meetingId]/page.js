@@ -10,7 +10,6 @@ import {
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 
-// 🧩 Lazy load Monaco Editor (prevents SSR crash)
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
 const MeetingRoom = ({ userName = 'User' }) => {
@@ -24,10 +23,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const [chatOpen, setChatOpen] = useState(true);
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
-
-  const [chatMessages, setChatMessages] = useState([
-    { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
-  ]);
+  const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome to the meeting!' }]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
 
@@ -41,12 +37,47 @@ const MeetingRoom = ({ userName = 'User' }) => {
   const pendingCandidates = useRef([]);
   const startedRef = useRef(false);
   const isOfferer = useRef(false);
-  const hasRemote = useRef(false);
 
-  // 🔌 Initialize WebSocket + WebRTC
+  // 🌐 Join room first
   useEffect(() => {
     if (!roomId) return;
 
+    const joinRoom = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: userName, role: 'user' }),
+        });
+        const data = await res.json();
+        console.log('🧩 Joined room:', data);
+
+        // If another user exists, this user becomes offer creator
+        if (data.count > 1) {
+          console.log('🟢 Another participant exists — will create offer');
+          isOfferer.current = true;
+        }
+
+        setupConnection(); // Now start WebSocket & WebRTC
+      } catch (err) {
+        console.error('Room join failed:', err);
+      }
+    };
+
+    joinRoom();
+
+    // On leave
+    return () => {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}/rooms/${roomId}/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: userName }),
+      }).catch(() => {});
+    };
+  }, [roomId]);
+
+  // ⚙️ Setup STOMP & WebRTC after joining room
+  const setupConnection = () => {
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
@@ -54,6 +85,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
       debug: (msg) => console.log('STOMP:', msg),
       onConnect: async () => {
         console.log('✅ Connected to WebSocket');
+
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           try {
             const signal = JSON.parse(msg.body);
@@ -63,7 +95,17 @@ const MeetingRoom = ({ userName = 'User' }) => {
             console.error('Failed to parse signal', e);
           }
         });
+
         sendSignal('join', { name: userName, time: Date.now() });
+
+        if (isOfferer.current) {
+          setTimeout(() => {
+            if (!pc.current.localDescription) {
+              console.log('🟢 Creating offer (auto)');
+              createOffer();
+            }
+          }, 1000);
+        }
       },
     });
 
@@ -87,36 +129,27 @@ const MeetingRoom = ({ userName = 'User' }) => {
     };
 
     pc.current.ontrack = (event) => {
+      console.log('🎥 Remote track received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        const play = remoteVideoRef.current.play?.();
-        if (play && typeof play.then === 'function') play.catch(() => {});
+        remoteVideoRef.current.play?.().catch(() => {});
       }
       setRemoteCamOn(true);
     };
 
-    // Setup local media
+    // Local media
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStreamRef.current = stream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          const play = localVideoRef.current.play?.();
-          if (play && typeof play.then === 'function') play.catch(() => {});
-        }
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play?.().catch(() => {});
         stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
       } catch (err) {
         console.error('❌ Media access error:', err);
       }
     })();
-
-    return () => {
-      try { client.deactivate(); } catch {}
-      try { pc.current?.close(); } catch {}
-      try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
-    };
-  }, [roomId]);
+  };
 
   // 📨 Send signal
   const sendSignal = (type, data) => {
@@ -134,16 +167,6 @@ const MeetingRoom = ({ userName = 'User' }) => {
     const data = signal.data;
 
     switch (signal.type) {
-      case 'join':
-        // If no one started offer yet, this user becomes offerer
-        if (!startedRef.current) {
-          console.log('🟢 Becoming offer creator');
-          startedRef.current = true;
-          isOfferer.current = true;
-          await createOffer();
-        }
-        break;
-
       case 'offer':
         if (!startedRef.current) {
           console.log('🔵 Received offer — creating answer');
@@ -153,33 +176,21 @@ const MeetingRoom = ({ userName = 'User' }) => {
         break;
 
       case 'answer':
-        if (isOfferer.current) {
-          console.log('✅ Received answer');
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          hasRemote.current = true;
-          processPendingCandidates();
-        }
+        console.log('✅ Received answer');
+        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+        processPendingCandidates();
         break;
 
       case 'candidate':
         if (pc.current.remoteDescription) {
-          try {
-            await pc.current.addIceCandidate(new RTCIceCandidate(data));
-            console.log('✅ Added ICE candidate');
-          } catch (e) {
-            console.error('ICE add error:', e);
-          }
+          await pc.current.addIceCandidate(new RTCIceCandidate(data));
         } else {
           pendingCandidates.current.push(data);
-          console.log('🕓 Buffered ICE candidate');
         }
         break;
 
       case 'chat':
-        setChatMessages((prev) => [
-          ...prev,
-          { id: Date.now(), sender: signal.sender, text: data },
-        ]);
+        setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
 
       case 'code':
@@ -191,28 +202,24 @@ const MeetingRoom = ({ userName = 'User' }) => {
     }
   };
 
-  // 💡 Create offer
+  // 💡 Offer/Answer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       sendSignal('offer', offer);
-      console.log('📤 Sent offer');
     } catch (err) {
       console.error('Offer error:', err);
     }
   };
 
-  // 💡 Handle offer & send answer
   const handleOffer = async (offer) => {
     try {
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
       sendSignal('answer', answer);
-      hasRemote.current = true;
       processPendingCandidates();
-      console.log('📤 Sent answer');
     } catch (err) {
       console.error('Answer error:', err);
     }
@@ -220,16 +227,12 @@ const MeetingRoom = ({ userName = 'User' }) => {
 
   const processPendingCandidates = async () => {
     for (const c of pendingCandidates.current) {
-      try {
-        await pc.current.addIceCandidate(new RTCIceCandidate(c));
-      } catch (e) {
-        console.warn('Candidate add failed:', e);
-      }
+      await pc.current.addIceCandidate(new RTCIceCandidate(c));
     }
     pendingCandidates.current = [];
   };
 
-  // Chat
+  // 💬 Chat
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -238,7 +241,7 @@ const MeetingRoom = ({ userName = 'User' }) => {
     setChatInput('');
   };
 
-  // Code sync
+  // 💻 Code sync
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
@@ -247,19 +250,20 @@ const MeetingRoom = ({ userName = 'User' }) => {
     }, 400);
   };
 
-  // Mic/cam toggle
+  // 🎤 Mic / 🎥 Cam
   const toggleMic = () => {
     const s = localStreamRef.current;
     if (s) s.getAudioTracks().forEach((t) => (t.enabled = !micOn));
     setMicOn((p) => !p);
   };
+
   const toggleCam = () => {
     const s = localStreamRef.current;
     if (s) s.getVideoTracks().forEach((t) => (t.enabled = !camOn));
     setCamOn((p) => !p);
   };
 
-  // Screen share
+  // 🖥 Screen share
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -275,23 +279,19 @@ const MeetingRoom = ({ userName = 'User' }) => {
         console.error('Screen share error:', err);
       }
     } else {
-      try {
-        const cam = localStreamRef.current || (await navigator.mediaDevices.getUserMedia({ video: true }));
-        const track = cam.getVideoTracks()[0];
-        const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) await sender.replaceTrack(track);
-        setScreenSharing(false);
-      } catch (err) {
-        console.error('Restore cam error:', err);
-      }
+      const cam = localStreamRef.current;
+      const track = cam.getVideoTracks()[0];
+      const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (sender) await sender.replaceTrack(track);
+      setScreenSharing(false);
     }
   };
 
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left`);
-    try { stompClient.current?.deactivate(); } catch {}
-    try { pc.current?.close(); } catch {}
-    try { localStreamRef.current?.getTracks()?.forEach((t) => t.stop()); } catch {}
+    stompClient.current?.deactivate();
+    pc.current?.close();
+    localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
     window.location.href = '/';
   };
 
