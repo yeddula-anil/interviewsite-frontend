@@ -41,7 +41,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const stompClient = useRef(null);
   const connectedRef = useRef(false);
   const joinedRef = useRef(false);
-  const isOfferer = useRef(false);
+  const isOfferer = useRef(false); // Candidate never sends offer
   const offerCreated = useRef(false);
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
@@ -58,7 +58,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           role: 'CANDIDATE',
         });
         console.log('🧩 Joined room:', res.data);
-        if (res.data.count > 1) isOfferer.current = true;
         await setupConnection();
       } catch (err) {
         console.error('❌ Room join failed:', err.response?.data || err.message);
@@ -86,7 +85,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       ],
     });
 
-    // 👇 Pre-create transceivers (ensure remote track delivery)
+    // 👇 Pre-create transceivers
     pc.current.addTransceiver('video', { direction: 'sendrecv' });
     pc.current.addTransceiver('audio', { direction: 'sendrecv' });
 
@@ -118,7 +117,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       setIsConnecting(false);
     };
 
-    // 🧩 Local Media Setup (before signaling)
+    // 🧩 Local Media Setup
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: 30 },
@@ -157,12 +156,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         });
 
         sendSignal('JOIN', { name: userName });
-
-        if (isOfferer.current && !offerCreated.current) {
-          offerCreated.current = true;
-          // 👇 Wait to ensure remote subscribed + tracks ready
-          setTimeout(createOffer, 1000);
-        }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
       onStompError: (frame) =>
@@ -221,17 +214,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
   };
 
-  // 💡 Offer/Answer
-  const createOffer = async () => {
-    try {
-      const offer = await pc.current.createOffer();
-      await pc.current.setLocalDescription(offer);
-      sendSignal('OFFER', offer);
-    } catch (err) {
-      console.error('Offer error:', err);
-    }
-  };
-
+  // 💡 Answer to Offer
   const handleOffer = async (offer) => {
     try {
       if (pc.current.signalingState !== 'stable') {
@@ -359,7 +342,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {/* ✅ Loader */}
             {isConnecting && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Connecting...
@@ -376,6 +358,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
                 </div>
               )
             )}
+
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
               {camOn ? (
                 <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />

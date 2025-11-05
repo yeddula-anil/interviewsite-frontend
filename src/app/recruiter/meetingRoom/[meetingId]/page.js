@@ -41,8 +41,10 @@ const RecruiterRoom = () => {
   const connectedRef = useRef(false);
   const offerCreated = useRef(false);
   const pendingCandidates = useRef([]);
-  const isOfferer = useRef(false);
   const joinedRef = useRef(false);
+
+  // 🔹 Recruiter always acts as offerer
+  const isOfferer = useRef(true);
 
   // 🔹 Join Room
   useEffect(() => {
@@ -56,7 +58,6 @@ const RecruiterRoom = () => {
           role: 'RECRUITER',
         });
         console.log('🧩 Joined room:', res.data);
-        if (res.data.count > 1) isOfferer.current = true;
         await setupConnection();
       } catch (err) {
         console.error('❌ Room join failed:', err.response?.data || err.message);
@@ -85,20 +86,20 @@ const RecruiterRoom = () => {
       ],
     });
 
-    // Pre-create transceivers for reliable remote track
+    // Pre-create transceivers
     pc.current.addTransceiver('video', { direction: 'sendrecv' });
     pc.current.addTransceiver('audio', { direction: 'sendrecv' });
 
     pc.current.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.current.connectionState);
       if (pc.current.connectionState === 'connected') {
-        console.log('✅ Peer-to-peer connection established!');
+        console.log('✅ Peer connected');
         setIsConnecting(false);
       } else if (
         pc.current.connectionState === 'failed' ||
         pc.current.connectionState === 'disconnected'
       ) {
-        console.warn('⚠️ Connection lost or failed.');
+        console.warn('⚠️ Connection lost.');
         setIsConnecting(true);
       }
     };
@@ -107,18 +108,22 @@ const RecruiterRoom = () => {
       console.log('🧊 ICE state:', pc.current.iceConnectionState);
     };
 
+    pc.current.onicecandidateerror = (e) => {
+      console.error('🚨 ICE candidate error:', e);
+    };
+
     pc.current.onicecandidate = (event) => {
       if (event.candidate) sendSignal('CANDIDATE', event.candidate.toJSON());
     };
 
     pc.current.ontrack = (event) => {
-      console.log('🎥 Remote track received');
+      console.log('🎥 Remote track received', event.streams);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         remoteVideoRef.current.play?.().catch(() => {});
-        setRemoteCamOn(true);
-        setIsConnecting(false);
       }
+      setRemoteCamOn(true);
+      setIsConnecting(false);
     };
 
     // 🧩 Local Media setup before signaling
@@ -160,7 +165,7 @@ const RecruiterRoom = () => {
 
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          // Delay offer to ensure both peers subscribed
+          console.log('🕒 Creating offer as recruiter...');
           setTimeout(createOffer, 1000);
         }
       },
@@ -214,9 +219,13 @@ const RecruiterRoom = () => {
     }
   };
 
-  // 💡 Offer/Answer Handlers
+  // 💡 Offer/Answer Handlers (with rollback-safe state)
   const createOffer = async () => {
     try {
+      if (pc.current.signalingState !== 'stable') {
+        console.warn('⚠️ Rolling back unstable offer state');
+        await pc.current.setLocalDescription({ type: 'rollback' });
+      }
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       sendSignal('OFFER', offer);
@@ -229,6 +238,7 @@ const RecruiterRoom = () => {
   const handleOffer = async (offer) => {
     try {
       if (pc.current.signalingState !== 'stable') {
+        console.warn('⚠️ Rolling back unstable state before setting remote offer');
         await pc.current.setLocalDescription({ type: 'rollback' });
       }
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
@@ -324,9 +334,7 @@ const RecruiterRoom = () => {
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
         {editorOpen && (
-          <div
-            className={`${editorMaximized ? 'w-full' : 'w-1/4'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
-          >
+          <div className={`${editorMaximized ? 'w-full' : 'w-1/4'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
               <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600">
@@ -351,7 +359,6 @@ const RecruiterRoom = () => {
 
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {/* ✅ Loader while connecting */}
             {isConnecting && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Connecting...
