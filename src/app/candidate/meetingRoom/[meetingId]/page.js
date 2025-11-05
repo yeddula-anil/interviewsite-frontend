@@ -88,9 +88,18 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         },
       ],
     });
+    pc.current.oniceconnectionstatechange = () => {
+    console.log('🧊 ICE state:', pc.current.iceConnectionState);
+    if (pc.current.iceConnectionState === 'connected') {
+      console.log('✅ Peer-to-peer connection established!');
+    } else if (pc.current.iceConnectionState === 'failed') {
+      console.warn('❌ ICE negotiation failed. TURN/STUN may be unreachable.');
+    }
+  };
+
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate.toJSON());
+      if (event.candidate) sendSignal('CANDIDATE', event.candidate.toJSON());
     };
 
     pc.current.ontrack = (event) => {
@@ -178,7 +187,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           await processPendingCandidates();
         }
         break;
-      case 'candidate':
+      case 'CANDIDATE':
         if (pc.current.remoteDescription) {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
         } else {

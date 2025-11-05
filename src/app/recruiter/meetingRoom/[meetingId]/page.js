@@ -91,7 +91,7 @@ const RecruiterRoom = () => {
     });
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate.toJSON());
+      if (event.candidate) sendSignal('CANDIDATE', event.candidate.toJSON());
     };
 
     pc.current.ontrack = (event) => {
@@ -178,7 +178,7 @@ const RecruiterRoom = () => {
           await processPendingCandidates();
         }
         break;
-      case 'candidate':
+      case 'CANDIDATE':
         if (pc.current.remoteDescription) {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
         } else {
