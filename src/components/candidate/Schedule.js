@@ -89,12 +89,12 @@ const Schedule = () => {
   };
 
   const handleJoin = (schedule) => {
-    if (canJoin(schedule)) {
+    // if (canJoin(schedule)) {
       setSelectedMeeting(schedule);
-      router.push(`/candidate/${schedule.meetingLink}/meeting`);
-    } else {
-      toast.error("You cannot join until 10 minutes before the interview");
-    }
+      router.push(`/candidate/meeting`);
+    // } else {
+    //   toast.error("You cannot join until 10 minutes before the interview");
+    // }
   };
 
   const handleUploadResume = async (e, scheduleId) => {

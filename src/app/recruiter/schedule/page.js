@@ -6,8 +6,10 @@ import Modal from '@/components/common/Modal';
 import toast from 'react-hot-toast';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthProvider';
+import { useRouter } from 'next/navigation';
 
 const RecruiterSchedule = () => {
+  const router=useRouter()
   const [schedules, setSchedules] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
@@ -85,12 +87,12 @@ const RecruiterSchedule = () => {
   };
 
   const handleJoin = (schedule) => {
-    if (!canJoin(schedule)) {
-      toast.error('You can only join 10 minutes before or after the start time');
-      return;
-    }
+    // if (!canJoin(schedule)) {
+    //   toast.error('You can only join 10 minutes before or after the start time');
+    //   return;
+    // }
     toast.success(`Joining meeting for ${schedule.candidateEmail}`);
-    console.log(`Navigate to /recruiter/${schedule.meetingLink}/meeting`);
+    router.push('/candidate/meeting')
   };
 
   const handleMarkCompleted = async (schedule) => {

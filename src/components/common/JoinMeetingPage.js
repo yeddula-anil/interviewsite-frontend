@@ -4,12 +4,13 @@ import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash } from 'react-ic
 import { IoMdClose } from 'react-icons/io';
 import { Button } from "@/components/common/Button";
 import { usePreJoin } from "@/context/PreJoinContext";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const JoinMeetingPage = () => {
     const { selectedMeeting } = usePreJoin();
     const searchParams = useSearchParams();
     const manual = searchParams.get("manual") === "true";
+    const router=useRouter()
 
     // Display details (fallbacks removed)
     const displayMeeting = manual
@@ -80,7 +81,8 @@ const JoinMeetingPage = () => {
             return;
         }
         const userName = encodeURIComponent(name || "Guest");
-        window.open(`${meetingLink}?name=${userName}`, "_blank");
+        router.push(`/candidate/meetingRoom/${meetingLink}`)
+        
     };
 
     const ControlButton = ({ active, onClick, activeIcon: ActiveIcon, inactiveIcon: InactiveIcon, label }) => {
