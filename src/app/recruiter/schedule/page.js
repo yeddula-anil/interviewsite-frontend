@@ -7,6 +7,8 @@ import toast from 'react-hot-toast';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthProvider';
 import { useRouter } from 'next/navigation';
+import { usePreJoin } from '@/context/PreJoinContext';
+
 
 const RecruiterSchedule = () => {
   const router=useRouter()
@@ -18,7 +20,8 @@ const RecruiterSchedule = () => {
   const [filter, setFilter] = useState('All');
   const [selectedDate, setSelectedDate] = useState('');
   const [loadingIds, setLoadingIds] = useState([]); // for Mark Completed
-  const [updating, setUpdating] = useState(false); // for Update Timing
+  const [updating, setUpdating] = useState(false);
+  const {setSelectedMeeting}=usePreJoin() // for Update Timing
 
   const today = new Date().toISOString().split('T')[0];
   const now = new Date();
@@ -93,6 +96,7 @@ const RecruiterSchedule = () => {
     //   return;
     // }
     toast.success(`Joining meeting for ${schedule.candidateEmail}`);
+    setSelectedMeeting(schedule.id)
     router.push('/candidate/meeting')
   };
 

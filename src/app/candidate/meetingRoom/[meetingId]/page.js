@@ -37,14 +37,13 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const pc = useRef(null);
   const stompClient = useRef(null);
   const connectedRef = useRef(false);
-  const startedRef = useRef(false);
-  const isOfferer = useRef(false);
-  const offerCreated = useRef(false);
   const joinedRef = useRef(false);
+  const offerCreated = useRef(false);
+  const isOfferer = useRef(false);
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
 
-  // 🌐 Join room safely once
+  // 🔹 Join room once
   useEffect(() => {
     if (!roomId || joinedRef.current) return;
     joinedRef.current = true;
@@ -75,12 +74,13 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
   // ⚙️ Setup WebRTC + STOMP
   const setupConnection = async () => {
-    if (pc.current) return; // Prevent duplicate setup
+    if (pc.current) return;
 
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
         {
           urls: 'turn:relay1.expressturn.com:3478',
           username: 'efree',
@@ -90,7 +90,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     });
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate);
+      if (event.candidate) sendSignal('candidate', event.candidate.toJSON());
     };
 
     pc.current.ontrack = (event) => {
@@ -102,7 +102,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       setRemoteCamOn(true);
     };
 
-    // Get local media
+    // Local Media
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
@@ -117,9 +117,8 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       return;
     }
 
-    // Setup STOMP
-    const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
-    const socket = new SockJS(wsUrl);
+    // STOMP
+    const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 4000,
@@ -131,18 +130,19 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           try {
             const signal = JSON.parse(msg.body);
-            console.log('📩 Received signal:', signal.type, 'from', signal.sender);
+            if (signal.sender === userName) return;
             handleSignal(signal);
           } catch (e) {
             console.error('❌ Signal parse error:', e);
           }
         });
 
-        sendSignal('join', { name: userName, time: Date.now() });
+        sendSignal('join', { name: userName });
 
+        // 2nd user creates the offer
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          setTimeout(createOffer, 800); // wait for both peers
+          setTimeout(createOffer, 600);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
@@ -155,32 +155,29 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
   // 📨 Send signal safely
   const sendSignal = (type, data) => {
-    if (!connectedRef.current || !stompClient.current?.connected) {
-      console.warn('⚠️ STOMP not connected yet, skipping signal:', type);
-      return;
-    }
+    if (!connectedRef.current || !stompClient.current?.connected) return;
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify({ sender: userName, type, data }),
     });
   };
 
-  // 📡 Handle signaling messages
+  // 📡 Handle incoming signals
   const handleSignal = async (signal) => {
-    const data = signal.data;
-    switch (signal.type) {
+    const { type, data } = signal;
+
+    switch (type) {
       case 'offer':
-        if (offerCreated.current) return;
-        console.log('🔵 Received offer — creating answer');
+        console.log('📩 Offer received');
         await handleOffer(data);
         break;
-
       case 'answer':
-        console.log('✅ Received answer');
-        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-        await processPendingCandidates();
+        if (!pc.current.remoteDescription) {
+          console.log('📩 Answer received');
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          await processPendingCandidates();
+        }
         break;
-
       case 'candidate':
         if (pc.current.remoteDescription) {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
@@ -188,20 +185,18 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           pendingCandidates.current.push(data);
         }
         break;
-
       case 'chat':
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
-
       case 'code':
         setCode(data);
         break;
-
       default:
-        console.warn('⚠️ Unknown signal type:', signal.type);
+        console.warn('⚠️ Unknown signal type:', type);
     }
   };
 
+  // 💡 Offer/Answer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -214,6 +209,9 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
   const handleOffer = async (offer) => {
     try {
+      if (pc.current.signalingState !== 'stable') {
+        await pc.current.setLocalDescription({ type: 'rollback' });
+      }
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
@@ -226,7 +224,11 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
   const processPendingCandidates = async () => {
     for (const c of pendingCandidates.current) {
-      await pc.current.addIceCandidate(new RTCIceCandidate(c));
+      try {
+        await pc.current.addIceCandidate(new RTCIceCandidate(c));
+      } catch (err) {
+        console.error('ICE add error:', err);
+      }
     }
     pendingCandidates.current = [];
   };
@@ -240,7 +242,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setChatInput('');
   };
 
-  // 💻 Code Sync
+  // 💻 Code sync
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
@@ -300,7 +302,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     });
   };
 
-  // 🎨 UI (unchanged)
+  // 🎨 UI unchanged
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">

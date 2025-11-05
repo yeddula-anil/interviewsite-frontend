@@ -18,6 +18,7 @@ const RecruiterRoom = () => {
   const roomId = String(params.meetingId || '');
   const userName = useRef(user?.name || `User-${Math.floor(Math.random() * 10000)}`).current;
 
+  // UI States
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
@@ -30,6 +31,7 @@ const RecruiterRoom = () => {
   ]);
   const [chatInput, setChatInput] = useState('');
 
+  // Refs
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -41,7 +43,7 @@ const RecruiterRoom = () => {
   const isOfferer = useRef(false);
   const joinedRef = useRef(false);
 
-  // 🧩 Join room only once
+  // 🔹 Join Room
   useEffect(() => {
     if (!roomId || joinedRef.current) return;
     joinedRef.current = true;
@@ -70,15 +72,16 @@ const RecruiterRoom = () => {
     };
   }, [roomId, userName]);
 
-  // ⚙️ Setup WebRTC + STOMP
+  // 🔧 Setup WebRTC + STOMP
   const setupConnection = async () => {
-    if (pc.current) return; // prevent multiple inits
+    if (pc.current) return;
 
-    // --- WebRTC setup ---
+    // ---- WebRTC ----
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
         {
           urls: 'turn:relay1.expressturn.com:3478',
           username: 'efree',
@@ -88,11 +91,10 @@ const RecruiterRoom = () => {
     });
 
     pc.current.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate);
+      if (event.candidate) sendSignal('candidate', event.candidate.toJSON());
     };
 
     pc.current.ontrack = (event) => {
-      console.log('🎥 Remote track received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         remoteVideoRef.current.play?.().catch(() => {});
@@ -100,6 +102,7 @@ const RecruiterRoom = () => {
       setRemoteCamOn(true);
     };
 
+    // ---- Local Stream ----
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
@@ -114,7 +117,7 @@ const RecruiterRoom = () => {
       return;
     }
 
-    // --- STOMP setup ---
+    // ---- STOMP ----
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
@@ -122,23 +125,24 @@ const RecruiterRoom = () => {
       debug: (msg) => console.log('🧠 STOMP:', msg),
       onConnect: () => {
         connectedRef.current = true;
-        console.log('✅ Connected to WebSocket');
+        console.log('✅ WebSocket Connected');
 
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           try {
             const signal = JSON.parse(msg.body);
-            console.log('📩 Received signal:', signal.type, 'from', signal.sender);
+            if (signal.sender === userName) return;
             handleSignal(signal);
           } catch (e) {
-            console.error('❌ Signal parse error:', e);
+            console.error('❌ Parse error:', e);
           }
         });
 
-        sendSignal('join', { name: userName, time: Date.now() });
+        sendSignal('join', { name: userName });
 
+        // Only 2nd person creates offer
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          setTimeout(createOffer, 800); // small delay to ensure both peers are ready
+          setTimeout(createOffer, 600);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
@@ -149,34 +153,31 @@ const RecruiterRoom = () => {
     client.activate();
   };
 
-  // 📨 Send signal safely
+  // 📨 Send signal
   const sendSignal = (type, data) => {
-    if (!connectedRef.current || !stompClient.current?.connected) {
-      console.warn('⚠️ STOMP not connected yet, skipping signal:', type);
-      return;
-    }
+    if (!connectedRef.current || !stompClient.current?.connected) return;
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify({ sender: userName, type, data }),
     });
   };
 
-  // 📡 Handle signaling messages
+  // 📡 Handle incoming signals
   const handleSignal = async (signal) => {
-    const data = signal.data;
-    switch (signal.type) {
+    const { type, data } = signal;
+
+    switch (type) {
       case 'offer':
-        if (offerCreated.current) return;
-        console.log('🔵 Received offer — creating answer');
+        console.log('📩 Offer received');
         await handleOffer(data);
         break;
-
       case 'answer':
-        console.log('✅ Received answer');
-        await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-        await processPendingCandidates();
+        if (!pc.current.remoteDescription) {
+          console.log('📩 Answer received');
+          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+          await processPendingCandidates();
+        }
         break;
-
       case 'candidate':
         if (pc.current.remoteDescription) {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
@@ -184,17 +185,15 @@ const RecruiterRoom = () => {
           pendingCandidates.current.push(data);
         }
         break;
-
       case 'chat':
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
-
       default:
-        console.warn('⚠️ Unknown signal type:', signal.type);
+        console.warn('⚠️ Unknown signal:', type);
     }
   };
 
-  // 💡 WebRTC Offer/Answer
+  // 💡 Offer/Answer
   const createOffer = async () => {
     try {
       const offer = await pc.current.createOffer();
@@ -207,6 +206,9 @@ const RecruiterRoom = () => {
 
   const handleOffer = async (offer) => {
     try {
+      if (pc.current.signalingState !== 'stable') {
+        await pc.current.setLocalDescription({ type: 'rollback' });
+      }
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
@@ -219,7 +221,11 @@ const RecruiterRoom = () => {
 
   const processPendingCandidates = async () => {
     for (const c of pendingCandidates.current) {
-      await pc.current.addIceCandidate(new RTCIceCandidate(c));
+      try {
+        await pc.current.addIceCandidate(new RTCIceCandidate(c));
+      } catch (err) {
+        console.error('ICE add error:', err);
+      }
     }
     pendingCandidates.current = [];
   };
@@ -229,11 +235,11 @@ const RecruiterRoom = () => {
     const text = chatInput.trim();
     if (!text) return;
     sendSignal('chat', text);
-    setChatMessages((p) => [...p, { id: Date.now(), sender: userName, text }]);
+    setChatMessages((prev) => [...prev, { id: Date.now(), sender: userName, text }]);
     setChatInput('');
   };
 
-  // 🎤 Mic / 🎥 Cam toggle
+  // 🎤 Mic / 🎥 Cam
   const toggleMic = () => {
     const stream = localStreamRef.current;
     if (stream) stream.getAudioTracks().forEach((t) => (t.enabled = !micOn));
@@ -246,7 +252,7 @@ const RecruiterRoom = () => {
     setCamOn((p) => !p);
   };
 
-  // 🖥 Screen share
+  // 🖥 Screen Share
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -270,7 +276,7 @@ const RecruiterRoom = () => {
     }
   };
 
-  // 📴 Leave meeting
+  // 📴 Leave
   const leaveMeeting = () => {
     sendSignal('leave', `${userName} left`);
     stompClient.current?.deactivate();
@@ -279,7 +285,7 @@ const RecruiterRoom = () => {
     window.location.href = '/';
   };
 
-  // Toggle Editor
+  // 🎨 Toggle Editor
   const toggleEditor = () => {
     setEditorOpen((p) => {
       if (p) setEditorMaximized(false);
@@ -287,7 +293,7 @@ const RecruiterRoom = () => {
     });
   };
 
-  // 🎨 UI (unchanged)
+  // 🧩 UI (unchanged)
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">

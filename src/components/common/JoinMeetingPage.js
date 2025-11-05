@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 const JoinMeetingPage = () => {
     const { selectedMeeting } = usePreJoin();
+    console.log(selectedMeeting)
     const searchParams = useSearchParams();
     const manual = searchParams.get("manual") === "true";
     const router=useRouter()
@@ -21,7 +22,7 @@ const JoinMeetingPage = () => {
     const [micOn, setMicOn] = useState(true);
     const [camOn, setCamOn] = useState(true);
     const [permissionDenied, setPermissionDenied] = useState(false);
-    const [meetingLink, setMeetingLink] = useState(manual ? "" : selectedMeeting?.meetingLink || "");
+    const [meetingLink, setMeetingLink] = useState(manual ? "" : selectedMeeting?.id || "");
 
     const videoRef = useRef(null);
     const streamRef = useRef(null);
