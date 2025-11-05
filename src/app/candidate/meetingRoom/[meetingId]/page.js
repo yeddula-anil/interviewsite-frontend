@@ -10,7 +10,7 @@ import {
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 
-// 🧩 Lazy load Monaco Editor (prevents SSR crash & speeds up load)
+// 🧩 Lazy load Monaco Editor (prevents SSR crash)
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
 const MeetingRoom = ({ userName = 'Candidate' }) => {
@@ -37,18 +37,19 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
   const pc = useRef(null);
   const stompClient = useRef(null);
   const codeUpdateTimeout = useRef(null);
+  const pendingCandidates = useRef([]); // buffer ICE if remote not ready
 
-  // 🔌 WebSocket & WebRTC setup
+  // 🔌 Initialize WebSocket + WebRTC
   useEffect(() => {
     if (!roomId) return;
 
-    // --- STOMP setup
+    // ---- STOMP Setup ----
     const socket = new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`);
     const client = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 5000,
       debug: (msg) => console.log('STOMP:', msg),
-      onConnect: () => {
+      onConnect: async () => {
         console.log('✅ Connected to WebSocket');
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
           try {
@@ -60,18 +61,17 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           }
         });
 
-        // Announce that candidate joined
+        // announce candidate presence
         sendSignal('join', `${userName} joined the meeting`);
       },
     });
     stompClient.current = client;
     client.activate();
 
-    // --- WebRTC setup
+    // ---- WebRTC Setup ----
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        // ⚠️ Public TURN creds are unreliable; replace with your own in production.
         {
           urls: 'turn:relay1.expressturn.com:3478',
           username: 'efree',
@@ -94,126 +94,104 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
     pc.current.ontrack = (event) => {
       console.log('🎥 Remote track received');
-      if (remoteVideoRef.current && !remoteVideoRef.current.srcObject) {
+      if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         const play = remoteVideoRef.current.play?.();
-        if (play && typeof play.then === 'function') {
-          play.catch(() => {
-            // ignore autoplay block; user gesture will play it
-          });
-        }
+        if (play && typeof play.then === 'function') play.catch(() => {});
       }
       setRemoteCamOn(true);
     };
 
-    // 📸 Initialize local media
-    const initLocalStream = async () => {
+    // ---- Initialize local stream immediately ----
+    (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
           const play = localVideoRef.current.play?.();
-          if (play && typeof play.then === 'function') {
-            play.catch(() => {
-              // ignore autoplay block
-            });
-          }
+          if (play && typeof play.then === 'function') play.catch(() => {});
         }
         stream.getTracks().forEach((track) => pc.current.addTrack(track, stream));
-        // Apply mic/cam initial state
-        stream.getAudioTracks().forEach((t) => (t.enabled = micOn));
-        stream.getVideoTracks().forEach((t) => (t.enabled = camOn));
       } catch (err) {
         console.error('❌ Media device access error:', err);
       }
-    };
-
-    initLocalStream();
+    })();
 
     return () => {
       try {
         client.deactivate();
       } catch {}
       try {
-        pc.current?.getSenders()?.forEach((s) => {
-          try { s.track?.stop(); } catch {}
-        });
+        pc.current?.getSenders()?.forEach((s) => s.track?.stop());
         pc.current?.close();
       } catch {}
       try {
         localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
       } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  // 🚀 Send messages to server
+  // 🚀 Send signal to STOMP
   const sendSignal = (type, data) => {
     if (!stompClient.current || !stompClient.current.connected) return;
-    const signalMessage = {
-      sender: userName,
-      type,
-      data,
-      role: 'candidate',
-    };
+    const msg = { sender: userName, type, data, role: 'candidate' };
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
-      body: JSON.stringify(signalMessage),
+      body: JSON.stringify(msg),
     });
-    console.log('📤 Sent signal:', type, '→', roomId);
+    console.log('📤 Sent signal:', type);
   };
 
   // 📡 Handle incoming signals
   const handleSignal = async (signal) => {
-    if (signal?.sender === userName) return;
-    const data = signal?.data;
+    if (signal.sender === userName) return;
+    const data = signal.data;
 
-    switch (signal?.type) {
-      case 'offer': {
-        console.log('📥 Offer received — creating & sending answer');
+    switch (signal.type) {
+      case 'offer':
+        console.log('📥 Offer received — creating answer');
         try {
           await pc.current.setRemoteDescription(new RTCSessionDescription(data));
           const answer = await pc.current.createAnswer();
           await pc.current.setLocalDescription(answer);
           sendSignal('answer', answer);
           console.log('📤 Answer sent');
-        } catch (e) {
-          console.error('Failed handling offer/answer:', e);
-        }
-        break;
-      }
 
-      case 'answer': {
-        try {
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          console.log('✅ Answer set successfully');
+          // process any buffered ICE candidates
+          for (const cand of pendingCandidates.current) {
+            try {
+              await pc.current.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (e) {
+              console.warn('Buffered ICE add failed', e);
+            }
+          }
+          pendingCandidates.current = [];
         } catch (e) {
-          console.error('Failed to set remote answer:', e);
+          console.error('❌ Offer/Answer handling failed:', e);
         }
         break;
-      }
 
-      case 'candidate': {
-        try {
-          await pc.current.addIceCandidate(new RTCIceCandidate(data));
-          console.log('✅ Added ICE candidate');
-        } catch (e) {
-          console.error('ICE Candidate error:', e);
+      case 'candidate':
+        if (pc.current.remoteDescription) {
+          try {
+            await pc.current.addIceCandidate(new RTCIceCandidate(data));
+            console.log('✅ Added ICE candidate');
+          } catch (e) {
+            console.error('ICE add error:', e);
+          }
+        } else {
+          pendingCandidates.current.push(data);
+          console.log('🕓 Buffered ICE candidate (no remote description yet)');
         }
         break;
-      }
 
       case 'chat': {
-        const messageText =
-          typeof signal.data === 'string'
-            ? signal.data
-            : signal.data?.text || JSON.stringify(signal.data);
-        console.log(`💬 Chat received from ${signal.sender}:`, messageText);
-        setChatMessages((prev) => [
-          ...prev,
-          { id: Date.now(), sender: signal.sender, text: messageText },
-        ]);
+        const msg =
+          typeof data === 'string'
+            ? data
+            : data?.text || JSON.stringify(data);
+        setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: msg }]);
         break;
       }
 
@@ -223,8 +201,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
       }
 
       default:
-        console.warn('Unknown signal type:', signal?.type);
-        break;
+        console.warn('Unknown signal type:', signal.type);
     }
   };
 
@@ -237,7 +214,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
     setChatInput('');
   };
 
-  // 💻 Code synchronization (throttled)
+  // 💻 Code sync (throttled)
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
@@ -260,7 +237,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
     setCamOn((p) => !p);
   };
 
-  // 🖥️ Screen share toggle
+  // 🖥️ Screen share
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -277,8 +254,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
       }
     } else {
       try {
-        const camStream = localStreamRef.current || (await navigator.mediaDevices.getUserMedia({ video: true }));
-        if (!localStreamRef.current) localStreamRef.current = camStream;
+        const camStream = localStreamRef.current || await navigator.mediaDevices.getUserMedia({ video: true });
         const videoTrack = camStream.getVideoTracks()[0];
         const sender = pc.current.getSenders().find((s) => s.track && s.track.kind === 'video');
         if (sender) {
@@ -286,7 +262,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           setScreenSharing(false);
         }
       } catch (err) {
-        console.error('Restore camera error:', err);
+        console.error('Restore cam error:', err);
       }
     }
   };
@@ -312,17 +288,11 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {/* 🧠 Monaco Code Editor */}
         {editorOpen && (
-          <div
-            className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
-          >
+          <div className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
-              <button
-                onClick={() => setEditorMaximized((prev) => !prev)}
-                className="p-1 rounded hover:bg-gray-600"
-              >
+              <button onClick={() => setEditorMaximized((prev) => !prev)} className="p-1 rounded hover:bg-gray-600">
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
@@ -341,7 +311,6 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           </div>
         )}
 
-        {/* 🎥 Video Section */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
@@ -364,16 +333,12 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           </div>
         )}
 
-        {/* 💬 Chat Section */}
         {!editorMaximized && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {chatMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.sender === userName ? 'justify-end' : 'justify-start'}`}
-                >
+                <div key={msg.id} className={`flex ${msg.sender === userName ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`p-2 rounded-lg max-w-[75%] ${
                       msg.sender === userName
@@ -387,7 +352,6 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
                 </div>
               ))}
             </div>
-
             <div className="flex p-2 border-t border-gray-700">
               <input
                 type="text"
@@ -405,38 +369,19 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         )}
       </div>
 
-      {/* 🎛️ Controls */}
       <div className="flex justify-between items-center mt-4">
-        <button
-          onClick={toggleEditor}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={toggleEditor} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
           <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
 
         <div className="flex justify-center gap-4">
-          <button
-            onClick={toggleMic}
-            className={`p-3 rounded-full border ${
-              micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
-            }`}
-          >
+          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
           </button>
-          <button
-            onClick={toggleCam}
-            className={`p-3 rounded-full border ${
-              camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
-            }`}
-          >
+          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
             {camOn ? <FaVideo /> : <FaVideoSlash />}
           </button>
-          <button
-            onClick={toggleScreenShare}
-            className={`p-3 rounded-full border ${
-              screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'
-            }`}
-          >
+          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}>
             <FaDesktop />
           </button>
           <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700">
@@ -444,10 +389,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
           </button>
         </div>
 
-        <button
-          onClick={() => setChatOpen((prev) => !prev)}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>

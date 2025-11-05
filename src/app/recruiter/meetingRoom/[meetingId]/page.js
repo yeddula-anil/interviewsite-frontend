@@ -8,6 +8,7 @@ import {
 } from 'react-icons/fa';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import Editor from '@monaco-editor/react';
 
 const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const params = useParams();
@@ -34,7 +35,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
   const localStreamRef = useRef(null);
   const pc = useRef(null);
   const stompClient = useRef(null);
-  const startedRef = useRef(false); // prevent multiple offers
+  const startedRef = useRef(false);
 
   // 🧩 Initialize WebSocket + WebRTC
   useEffect(() => {
@@ -45,8 +46,22 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       webSocketFactory: () => socket,
       reconnectDelay: 5000,
       debug: (msg) => console.log('STOMP:', msg),
-      onConnect: () => {
+      onConnect: async () => {
         console.log('✅ Connected to WebSocket');
+
+        // Start local camera immediately
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          localStreamRef.current = stream;
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+            const play = localVideoRef.current.play?.();
+            if (play && typeof play.then === 'function') play.catch(() => {});
+          }
+          stream.getTracks().forEach((track) => pc.current.addTrack(track, stream));
+        } catch (err) {
+          console.error('Error accessing camera/mic:', err);
+        }
 
         // Subscribe to signaling topic
         client.subscribe(`/topic/signal/${roomId}`, (msg) => {
@@ -55,7 +70,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           handleSignal(signal);
         });
 
-        // Recruiter announces presence
+        // Announce presence
         sendSignal('join', `${userName} joined the meeting`);
       },
     });
@@ -89,7 +104,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
 
     pc.current.ontrack = (event) => {
       console.log('🎥 Remote track received');
-      if (remoteVideoRef.current && !remoteVideoRef.current.srcObject) {
+      if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         const play = remoteVideoRef.current.play?.();
         if (play && typeof play.then === 'function') play.catch(() => {});
@@ -106,22 +121,15 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  // 🧠 Initialize local stream and create offer
-  const initLocalStream = async () => {
+  // 🧠 Create offer when candidate joins
+  const createOffer = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      localStreamRef.current = stream;
-      localVideoRef.current.srcObject = stream;
-      const play = localVideoRef.current.play?.();
-      if (play && typeof play.then === 'function') play.catch(() => {});
-      stream.getTracks().forEach((track) => pc.current.addTrack(track, stream));
-
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       sendSignal('offer', offer);
       console.log('📤 Offer sent');
     } catch (err) {
-      console.error('Error accessing media devices:', err);
+      console.error('Error creating offer:', err);
     }
   };
 
@@ -143,7 +151,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
 
   // 🧩 Handle incoming WebRTC & chat signals
   const handleSignal = async (signal) => {
-    if (signal.sender === userName) return; // ignore own messages
+    if (signal.sender === userName) return;
     const data = signal.data;
 
     switch (signal.type) {
@@ -151,7 +159,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
         if (signal.role === 'candidate' && !startedRef.current) {
           console.log('🎥 Candidate joined — creating offer...');
           startedRef.current = true;
-          await initLocalStream();
+          await createOffer();
         }
         break;
 
@@ -178,7 +186,6 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
           typeof signal.data === 'string'
             ? signal.data
             : signal.data?.text || JSON.stringify(signal.data);
-        console.log(`💬 Chat received from ${signal.sender}:`, messageText);
         setChatMessages((prev) => [
           ...prev,
           { id: Date.now(), sender: signal.sender, text: messageText },
@@ -270,7 +277,20 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
-            <textarea placeholder="// Write your code here..." className="flex-1 bg-gray-900 text-white p-3 text-sm outline-none resize-none" />
+            <div className="flex-1">
+              <Editor
+                height="100%"
+                theme="vs-dark"
+                defaultLanguage="javascript"
+                defaultValue="// Write your code here..."
+                options={{
+                  fontSize: 13,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                }}
+              />
+            </div>
           </div>
         )}
 
