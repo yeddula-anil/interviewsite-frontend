@@ -48,11 +48,9 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
         // Subscribe to signaling topic
         stompClient.current.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
+          console.log('📩 Received signal:', signal.type, 'from', signal.sender);
           handleSignal(signal);
         });
-
-        // Announce presence
-        sendSignal('join', `${userName} joined the meeting`);
       },
     });
 
@@ -62,6 +60,11 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
+        {
+          urls: 'turn:relay1.expressturn.com:3478',
+          username: 'efree',
+          credential: 'efree',
+        },
       ],
     });
 
@@ -109,6 +112,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify(signalMessage),
     });
+    console.log('📤 Sent signal:', type);
   };
 
   // 🧩 Handle incoming WebRTC & chat signals
@@ -119,7 +123,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
     switch (signal.type) {
       case 'join':
         if (signal.role === 'candidate' && !startedRef.current) {
-          console.log('🎥 Candidate joined — starting offer');
+          console.log('🎥 Candidate joined — creating offer...');
           startedRef.current = true;
           await initLocalStream();
         }
@@ -227,7 +231,7 @@ const RecruiterRoom = ({ userName = 'Recruiter' }) => {
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
-              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-lg" />
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-500">
                 <FaUserCircle size={120} />

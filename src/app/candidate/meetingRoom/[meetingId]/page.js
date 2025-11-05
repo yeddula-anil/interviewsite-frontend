@@ -15,6 +15,7 @@ const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
 const MeetingRoom = ({ userName = 'Candidate' }) => {
   const params = useParams();
+  console.log(params.meetingId)
   const roomId = params.meetingId;
 
   const [micOn, setMicOn] = useState(true);
@@ -48,6 +49,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         console.log('✅ Connected to WebSocket');
         stompClient.current.subscribe(`/topic/signal/${roomId}`, (msg) => {
           const signal = JSON.parse(msg.body);
+          console.log('📩 Received signal:', signal.type, 'from', signal.sender);
           handleSignal(signal);
         });
 
@@ -59,7 +61,14 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
 
     // 🎥 Setup WebRTC
     pc.current = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        {
+          urls: 'turn:relay1.expressturn.com:3478',
+          username: 'efree',
+          credential: 'efree',
+        },
+      ],
     });
 
     pc.current.onicecandidate = (event) => {
@@ -102,6 +111,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify(signalMessage),
     });
+    console.log('📤 Sent signal:', type, '→', roomId);
   };
 
   // 📡 Handle incoming signals
@@ -116,15 +126,18 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         const answer = await pc.current.createAnswer();
         await pc.current.setLocalDescription(answer);
         sendSignal('answer', answer);
+        console.log('📤 Answer sent');
         break;
 
       case 'answer':
         await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+        console.log('✅ Answer set successfully');
         break;
 
       case 'candidate':
         try {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
+          console.log('✅ Added ICE candidate');
         } catch (e) {
           console.error('ICE Candidate error:', e);
         }
@@ -220,9 +233,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         {/* 🧠 Monaco Code Editor */}
         {editorOpen && (
           <div
-            className={`${
-              editorMaximized ? 'w-full' : 'w-1/3'
-            } bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
+            className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
           >
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
@@ -252,7 +263,7 @@ const MeetingRoom = ({ userName = 'Candidate' }) => {
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {remoteCamOn ? (
-              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-lg" />
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-500">
                 <FaUserCircle size={120} />
