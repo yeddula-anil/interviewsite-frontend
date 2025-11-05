@@ -89,6 +89,15 @@ const RecruiterRoom = () => {
         },
       ],
     });
+    pc.current.oniceconnectionstatechange = () => {
+  console.log('🧊 ICE state:', pc.current.iceConnectionState);
+  if (pc.current.iceConnectionState === 'connected') {
+    console.log('✅ Peer-to-peer connection established!');
+  } else if (pc.current.iceConnectionState === 'failed') {
+    console.warn('❌ ICE negotiation failed. TURN/STUN may be unreachable.');
+  }
+};
+
 
     pc.current.onicecandidate = (event) => {
       if (event.candidate) sendSignal('CANDIDATE', event.candidate.toJSON());
