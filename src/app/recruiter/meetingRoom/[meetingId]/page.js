@@ -30,6 +30,7 @@ const RecruiterRoom = () => {
     { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
   ]);
   const [chatInput, setChatInput] = useState('');
+  const [isConnecting, setIsConnecting] = useState(true); // ✅ new state for loading indicator
 
   // Refs
   const localVideoRef = useRef(null);
@@ -73,7 +74,8 @@ const RecruiterRoom = () => {
   const setupConnection = async () => {
     if (pc.current) return;
 
-    // ---- WebRTC ----
+    setIsConnecting(true);
+
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -86,13 +88,21 @@ const RecruiterRoom = () => {
       ],
     });
 
+    // connection state
+    pc.current.onconnectionstatechange = () => {
+      console.log('🔗 Connection state:', pc.current.connectionState);
+      if (pc.current.connectionState === 'connected') {
+        setIsConnecting(false);
+        console.log('✅ Peer-to-peer connection established!');
+      }
+      if (pc.current.connectionState === 'failed' || pc.current.connectionState === 'disconnected') {
+        console.warn('⚠️ Connection lost or failed.');
+        setIsConnecting(true);
+      }
+    };
+
     pc.current.oniceconnectionstatechange = () => {
       console.log('🧊 ICE state:', pc.current.iceConnectionState);
-      if (pc.current.iceConnectionState === 'connected') {
-        console.log('✅ Peer-to-peer connection established!');
-      } else if (pc.current.iceConnectionState === 'failed') {
-        console.warn('❌ ICE negotiation failed. TURN/STUN may be unreachable.');
-      }
     };
 
     pc.current.onicecandidate = (event) => {
@@ -103,19 +113,19 @@ const RecruiterRoom = () => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         remoteVideoRef.current.play?.().catch(() => {});
+        setRemoteCamOn(true);
+        setIsConnecting(false);
       }
-      setRemoteCamOn(true);
     };
 
-    // ---- Local Stream ----
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
+      stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play?.().catch(() => {});
       }
-      stream.getTracks().forEach((t) => pc.current.addTrack(t, stream));
     } catch (err) {
       console.error('❌ Media access error:', err);
       alert('Please allow camera and microphone permissions.');
@@ -142,11 +152,11 @@ const RecruiterRoom = () => {
           }
         });
 
-        sendSignal('join', { name: userName });
+        sendSignal('JOIN', { name: userName });
 
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
-          setTimeout(createOffer, 500);
+          setTimeout(createOffer, 600);
         }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
@@ -168,18 +178,20 @@ const RecruiterRoom = () => {
 
   // 📡 Handle incoming signals
   const handleSignal = async (signal) => {
-    const { type, data } = signal;
+    const type = signal.type?.toUpperCase();
+    const data = signal.data;
 
     switch (type) {
-      case 'offer':
+      case 'OFFER':
         console.log('📩 Offer received');
         await handleOffer(data);
         break;
-      case 'answer':
+      case 'ANSWER':
         if (!pc.current.remoteDescription) {
           console.log('📩 Answer received');
           await pc.current.setRemoteDescription(new RTCSessionDescription(data));
           await processPendingCandidates();
+          setIsConnecting(false);
         }
         break;
       case 'CANDIDATE':
@@ -189,7 +201,7 @@ const RecruiterRoom = () => {
           pendingCandidates.current.push(data);
         }
         break;
-      case 'chat':
+      case 'CHAT':
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
       default:
@@ -202,7 +214,8 @@ const RecruiterRoom = () => {
     try {
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
-      sendSignal('offer', offer);
+      sendSignal('OFFER', offer);
+      console.log('📤 Offer sent');
     } catch (err) {
       console.error('Offer error:', err);
     }
@@ -213,7 +226,7 @@ const RecruiterRoom = () => {
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
-      sendSignal('answer', answer);
+      sendSignal('ANSWER', answer);
       await processPendingCandidates();
     } catch (err) {
       console.error('Answer error:', err);
@@ -235,7 +248,7 @@ const RecruiterRoom = () => {
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
-    sendSignal('chat', text);
+    sendSignal('CHAT', text);
     setChatMessages((prev) => [...prev, { id: Date.now(), sender: userName, text }]);
     setChatInput('');
   };
@@ -279,7 +292,7 @@ const RecruiterRoom = () => {
 
   // 📴 Leave
   const leaveMeeting = () => {
-    sendSignal('leave', `${userName} left`);
+    sendSignal('LEAVE', `${userName} left`);
     leaveCleanup();
     window.location.href = '/';
   };
@@ -335,7 +348,14 @@ const RecruiterRoom = () => {
 
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {remoteCamOn ? (
+            {/* ✅ Show loader in center if connecting */}
+            {isConnecting && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
+                Connecting...
+              </div>
+            )}
+
+            {remoteCamOn && !isConnecting ? (
               <video
                 ref={remoteVideoRef}
                 autoPlay
@@ -343,11 +363,14 @@ const RecruiterRoom = () => {
                 className="w-full h-full object-cover rounded-lg"
               />
             ) : (
-              <div className="flex flex-col items-center justify-center text-gray-500">
-                <FaUserCircle size={120} />
-                <p className="text-lg mt-2">Waiting for others...</p>
-              </div>
+              !isConnecting && (
+                <div className="flex flex-col items-center justify-center text-gray-500">
+                  <FaUserCircle size={120} />
+                  <p className="text-lg mt-2">Waiting for others...</p>
+                </div>
+              )
             )}
+
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
               {camOn ? (
                 <video
