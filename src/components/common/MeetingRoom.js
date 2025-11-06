@@ -7,7 +7,7 @@ import {
 } from 'react-icons/fa';
 import { useParams } from 'next/navigation';
 import axiosInstance from '@/utils/axiosInstance';
-import  {useSignaling} from '@/hooks/useSignaling';
+import { useSignaling } from '@/hooks/useSignaling';
 import { useWebRTC } from '@/hooks/useWebRTC';
 import { useAuth } from '@/context/AuthProvider';
 
@@ -46,10 +46,10 @@ const MeetingRoom = () => {
           name: username,
           role,
         });
-        const count = res.data?.count || 1;
-        setIsOfferer(count === 1);
+        const isOffer = res.data?.isOfferer || false;
+        setIsOfferer(isOffer);
         setReady(true);
-        console.log(`🧩 Joined room as ${count === 1 ? 'offerer' : 'answerer'}`);
+        console.log(`🧩 Joined room as ${isOffer ? 'offerer' : 'answerer'}`);
       } catch (err) {
         console.error('❌ Join room failed:', err);
       }
@@ -60,39 +60,59 @@ const MeetingRoom = () => {
     };
   }, [roomId, username, role]);
 
-  // --- Step 2: Signaling first (before WebRTC)
+  // --- Step 2: Signaling setup
   const signaling = useSignaling({
     roomId,
     userName: username,
-    onMessage: null, // we'll link later
+    onMessage: null, // will be linked later
   });
 
-  // --- Step 3: WebRTC, pass signaling.send as sendSignal
+  // --- Step 3: WebRTC setup
   const {
     localVideoRef: webRTCLocalVideo,
     remoteVideoRef: webRTCRemoteVideo,
     micOn, camOn,
     toggleMic, toggleCam, toggleScreenShare,
     handleSignal,
+    start,
+    localStream,
   } = useWebRTC({
     isOfferer,
-    sendSignal: signaling.send, // ✅ linked signaling channel
+    signaling,
+    onRemoteStream: (remoteStream) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play?.().catch(() => {});
+      }
+      setRemoteCamOn(true);
+      setIsConnecting(false);
+    },
   });
 
-  // --- Step 4: Now connect signaling.onMessage to WebRTC handler
+  // --- Step 4: Link signaling to WebRTC
   useEffect(() => {
     if (signaling.connected) {
-      signaling.onMessage = handleSignal; // link dynamically after mount
+      signaling.onMessage = handleSignal;
     }
   }, [signaling.connected, handleSignal]);
 
-  // --- Step 5: Hook up refs
+  // --- Step 5: Start WebRTC after ready + signaling
   useEffect(() => {
-    localVideoRef.current = webRTCLocalVideo.current;
-    remoteVideoRef.current = webRTCRemoteVideo.current;
-  }, [webRTCLocalVideo, webRTCRemoteVideo]);
+    if (ready && signaling.connected) {
+      console.log('🚀 Starting WebRTC...');
+      start();
+      setIsConnecting(true);
+    }
+  }, [ready, signaling.connected, start]);
 
-  // --- Step 6: Chat & Code
+  // --- Step 6: Attach local stream
+  useEffect(() => {
+    if (localStream?.current && localVideoRef.current) {
+      localVideoRef.current.srcObject = localStream.current;
+    }
+  }, [localStream]);
+
+  // --- Step 7: Chat & Code
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -106,18 +126,18 @@ const MeetingRoom = () => {
     signaling.send('code', newCode);
   };
 
-  // --- Step 7: Leave & cleanup
+  // --- Step 8: Leave meeting
   const leaveMeeting = () => {
     signaling.send('leave', `${username} left`);
     signaling.disconnect?.();
     window.location.href = '/';
   };
 
-  // --- UI
+  // --- UI ---
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {/* Editor */}
+        {/* Code Editor */}
         {editorOpen && (
           <div
             className={`${
@@ -145,7 +165,7 @@ const MeetingRoom = () => {
           </div>
         )}
 
-        {/* Video */}
+        {/* Video Section */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {isConnecting && (
@@ -188,7 +208,7 @@ const MeetingRoom = () => {
           </div>
         )}
 
-        {/* Chat */}
+        {/* Chat Section */}
         {!editorMaximized && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
