@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  * useWebRTC — robust version
  * - Queues ICE candidates until remoteDescription is set
  * - Defers offer until PC + media ready
- * - Uses multiple reliable STUN servers for network traversal.
+ * - Uses multiple reliable STUN and TURN servers for network traversal.
  * - Emits connection events you can use to hide "Connecting..."
  */
 export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionChange }) {
@@ -45,19 +45,32 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionCh
 
     console.log('🎬 Initializing WebRTC...');
 
-    // [!FIX] Updated ICE configuration: Removed unreliable public TURN servers 
-    // and added multiple reliable STUN servers for robust peer-to-peer connection.
+    // [!FIX] This is the most important change.
+    // Added reliable public TURN servers to relay video when a
+    // direct STUN connection fails on complex networks.
     const pc = new RTCPeerConnection({
       iceServers: [
+        // Start with reliable STUN
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        // For production, you would deploy your own reliable TURN server here.
+        { urls: 'stun:stun.metered.ca:80' },
+        // Fallback to reliable TURN
+        {
+          urls: 'turn:turn.metered.ca:80?transport=tcp',
+          username: 'guest',
+          credential: 'guest',
+        },
+        {
+          urls: 'turn:turn.metered.ca:443?transport=tcp',
+          username: 'guest',
+          credential: 'guest',
+        },
+        {
+          urls: 'turns:turn.metered.ca:443?transport=tcp',
+          username: 'guest',
+          credential: 'guest',
+        },
       ],
-      // Optional: force relay when debugging strict NATs
-      // iceTransportPolicy: 'all', // or 'relay'
     });
     pcRef.current = pc;
 
@@ -126,7 +139,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionCh
         setStarted(true);
       } catch (err) {
         console.error('❌ Failed to access media devices:', err);
-        // We won't use alert() as it's bad practice in hooks and will be 
+        // We won't use alert() as it's bad practice in hooks and will be
         // blocked by the browser in many contexts.
       }
     })();
@@ -257,7 +270,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionCh
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
         const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-        
+
         if (sender) {
           sender.replaceTrack(screenTrack);
           screenTrack.onended = () => toggleScreenShare(); // Revert on stop
@@ -272,7 +285,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionCh
       try {
         const camTrack = localStream.current?.getVideoTracks()[0];
         const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-        
+
         if (sender && camTrack) {
           sender.replaceTrack(camTrack);
           setScreenSharing(false);
