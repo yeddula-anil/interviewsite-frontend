@@ -2,20 +2,24 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
- * useWebRTC Hook
- * Handles offer/answer, ICE candidates, media setup, and signaling.
+ * ✅ useWebRTC Hook (Final Stable Version)
+ * Fixes:
+ *  - "Failed to access media devices" / NotFoundError
+ *  - Offer created before media ready
+ *  - PeerConnection closing mid-init
  */
 export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
   const pcRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStream = useRef(null);
-  const initializedRef = useRef(false); // ✅ Prevent double init in Strict Mode
+  const initializedRef = useRef(false);
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
   const [started, setStarted] = useState(false);
+  const [pcReady, setPcReady] = useState(false);
 
   const safeSend = useCallback(
     (type, data) => {
@@ -29,10 +33,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     [signaling]
   );
 
-  // ✅ Setup peer connection safely
-   // ✅ Setup peer connection safely (production-stable)
   useEffect(() => {
-    // Prevent double init
     if (initializedRef.current) return;
     initializedRef.current = true;
 
@@ -50,46 +51,52 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     });
     pcRef.current = pc;
 
-    // 🔗 Handle remote tracks
     pc.ontrack = (event) => {
       console.log('🎥 Remote stream received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        onRemoteStream?.(event.streams[0]);
+        remoteVideoRef.current.play?.().catch(() => {});
       }
+      onRemoteStream?.(event.streams[0]);
     };
 
-    // 🧊 ICE Candidate
     pc.onicecandidate = (event) => {
       if (event.candidate) safeSend('candidate', event.candidate);
     };
 
-    // 🔎 Connection state
     pc.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.connectionState);
     };
 
-    // 🎥 Get media after PC ready
+    setPcReady(true);
+
+    // 🎥 Get media safely
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localStream.current = stream;
+        console.log('🔎 Checking devices...');
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const hasVideo = devices.some((d) => d.kind === 'videoinput');
+        const hasAudio = devices.some((d) => d.kind === 'audioinput');
 
-        // Skip if PC closed (async safety)
-        if (!pcRef.current || pcRef.current.signalingState === 'closed') {
-          console.warn('⚠️ Skipping addTrack — connection closed');
-          return;
+        if (!hasVideo && !hasAudio) {
+          throw new Error('No camera or microphone detected.');
         }
 
-        // Attach to local video
+        const constraints = {
+          video: hasVideo ? { width: 1280, height: 720 } : false,
+          audio: hasAudio,
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStream.current = stream;
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
           await localVideoRef.current.play?.().catch(() => {});
         }
 
-        // Add tracks safely
         stream.getTracks().forEach((track) => {
-          if (pcRef.current.signalingState !== 'closed') {
+          if (pcRef.current?.signalingState !== 'closed') {
             pc.addTrack(track, stream);
           }
         });
@@ -98,12 +105,14 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
         setStarted(true);
       } catch (err) {
         console.error('❌ Failed to access media devices:', err);
+        alert(
+          'Camera/Mic access failed. Please allow permissions and reload the page.'
+        );
       }
     })();
 
-    // 🧹 Cleanup only when window unloads (not re-render)
     const handleUnload = () => {
-      console.log('🧹 Closing WebRTC connection (window unload)');
+      console.log('🧹 Closing WebRTC (tab closed)');
       pcRef.current?.close();
       localStream.current?.getTracks().forEach((t) => t.stop());
     };
@@ -111,13 +120,10 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
-      // Do NOT close PC on component re-render
-      console.log('⚙️ Skipping cleanup on render change');
+      console.log('⚙️ Skipping PC close on re-render');
     };
-  }, []); // ✅ No dependencies (runs once)
+  }, [safeSend, onRemoteStream]);
 
-
-  // ✅ Handle incoming signals
   const handleSignal = useCallback(
     async ({ type, data }) => {
       const pc = pcRef.current;
@@ -153,46 +159,47 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     [safeSend]
   );
 
-  // ✅ Offerer creates offer after stream ready
   const start = useCallback(async () => {
-    if (!isOfferer || !started) return;
-    const pc = pcRef.current;
-    if (!pc || pc.signalingState === 'closed') {
-      console.warn('⚠️ Cannot create offer: Peer connection closed');
+    if (!isOfferer || !started || !pcReady) {
+      console.log('⏳ Waiting for PC and media...');
       return;
     }
+
+    const pc = pcRef.current;
+    if (!pc || pc.signalingState === 'closed') {
+      console.warn('⚠️ Cannot create offer: PC closed');
+      return;
+    }
+
     console.log('🧠 Creating and sending offer...');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     safeSend('offer', offer);
-  }, [isOfferer, started, safeSend]);
+  }, [isOfferer, started, pcReady, safeSend]);
 
-  // ✅ Toggle mic
   const toggleMic = () => {
     const enabled = !micOn;
     localStream.current?.getAudioTracks().forEach((t) => (t.enabled = enabled));
     setMicOn(enabled);
   };
 
-  // ✅ Toggle camera
   const toggleCam = () => {
     const enabled = !camOn;
     localStream.current?.getVideoTracks().forEach((t) => (t.enabled = enabled));
     setCamOn(enabled);
   };
 
-  // ✅ Toggle screen sharing
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       const screenTrack = screenStream.getVideoTracks()[0];
-      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+      const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
       sender?.replaceTrack(screenTrack);
       screenTrack.onended = () => toggleScreenShare();
       setScreenSharing(true);
     } else {
-      const camTrack = localStream.current.getVideoTracks()[0];
-      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+      const camTrack = localStream.current?.getVideoTracks()[0];
+      const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
       sender?.replaceTrack(camTrack);
       setScreenSharing(false);
     }

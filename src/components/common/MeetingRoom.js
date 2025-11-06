@@ -98,12 +98,21 @@ const MeetingRoom = () => {
 
   // --- Step 5: Start WebRTC after ready + signaling
   useEffect(() => {
-    if (ready && signaling.connected) {
-      console.log('🚀 Starting WebRTC...');
-      start();
-      setIsConnecting(true);
-    }
-  }, [ready, signaling.connected, start]);
+  if (ready && signaling.connected) {
+    console.log('🚀 Starting WebRTC (waiting for media)...');
+    const delay = setTimeout(() => {
+      if (localStream?.current) {
+        console.log('🎥 Local stream ready, sending offer...');
+        start();
+        setIsConnecting(true);
+      } else {
+        console.log('⏳ Media not yet ready, retrying later...');
+      }
+    }, 800);
+    return () => clearTimeout(delay);
+  }
+}, [ready, signaling.connected, start, localStream]);
+
 
   // --- Step 6: Attach local stream
   useEffect(() => {
