@@ -2,7 +2,7 @@
 import React from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthProvider';
-import MeetingRoom from '@/components/MeetingRoom';
+import MeetingRoom from '@/components/common/MeetingRoom';
 
 const MeetingPage = () => {
   const params = useParams();
