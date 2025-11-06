@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * useWebRTC Hook
@@ -15,12 +15,24 @@ export function useWebRTC({ sendSignal, isOfferer }) {
 
   const pendingCandidates = useRef([]);
 
+  // ✅ Safe wrapper to send signaling messages
+  const safeSend = useCallback(
+    (type, data) => {
+      if (typeof sendSignal !== 'function') {
+        console.warn(`⚠️ Tried to send before signaling ready: ${type}`);
+        return;
+      }
+      console.log(`📤 Sending ${type}`);
+      sendSignal(type, data);
+    },
+    [sendSignal]
+  );
+
   useEffect(() => {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Optional TURN server (use for production)
         {
           urls: 'turn:openrelay.metered.ca:80',
           username: 'openrelayproject',
@@ -57,21 +69,19 @@ export function useWebRTC({ sendSignal, isOfferer }) {
     // Send ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('📤 Sending ICE candidate');
-        sendSignal('candidate', event.candidate);
+        safeSend('candidate', event.candidate);
       } else {
         console.log('✅ ICE candidate gathering complete');
       }
     };
 
-    // Connection state monitoring
     pc.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.connectionState);
     };
 
     setStarted(true);
     return () => pc.close();
-  }, [sendSignal]);
+  }, [safeSend]);
 
   // Handle incoming signaling messages
   const handleSignal = async ({ type, data }) => {
@@ -85,9 +95,9 @@ export function useWebRTC({ sendSignal, isOfferer }) {
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        sendSignal('answer', answer);
+        safeSend('answer', answer);
 
-        // Apply queued ICE candidates after setting remote description
+        // Apply queued ICE candidates
         for (const c of pendingCandidates.current) {
           try {
             await pc.addIceCandidate(new RTCIceCandidate(c));
@@ -103,7 +113,7 @@ export function useWebRTC({ sendSignal, isOfferer }) {
         console.log('📩 Answer received');
         await pc.setRemoteDescription(new RTCSessionDescription(data));
 
-        // Apply queued candidates now
+        // Apply queued ICE candidates
         for (const c of pendingCandidates.current) {
           try {
             await pc.addIceCandidate(new RTCIceCandidate(c));
@@ -126,10 +136,13 @@ export function useWebRTC({ sendSignal, isOfferer }) {
         }
         break;
       }
+
+      default:
+        console.log(`ℹ️ Unknown signal type: ${type}`);
     }
   };
 
-  // Offerer: only create offer after local stream ready and peer joined
+  // Offerer creates the offer
   useEffect(() => {
     if (!isOfferer || !started) return;
 
@@ -138,13 +151,13 @@ export function useWebRTC({ sendSignal, isOfferer }) {
       console.log('🧠 Creating and sending offer...');
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      sendSignal('offer', offer);
+      safeSend('offer', offer);
     };
 
-    // Delay a bit to ensure the other peer is ready
+    // Slight delay to ensure signaling connection is ready
     const timeout = setTimeout(createOffer, 1000);
     return () => clearTimeout(timeout);
-  }, [isOfferer, started, sendSignal]);
+  }, [isOfferer, started, safeSend]);
 
   return { localVideoRef, remoteVideoRef, handleSignal };
 }
