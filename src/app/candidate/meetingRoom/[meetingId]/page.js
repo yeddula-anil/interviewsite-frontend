@@ -26,9 +26,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const [chatOpen, setChatOpen] = useState(true);
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
-  const [chatMessages, setChatMessages] = useState([
-    { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
-  ]);
+  const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome to the meeting!' }]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
   const [isConnecting, setIsConnecting] = useState(true);
@@ -41,7 +39,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const stompClient = useRef(null);
   const connectedRef = useRef(false);
   const joinedRef = useRef(false);
-  const isOfferer = useRef(false); // Candidate never sends offer
+  const isOfferer = useRef(false);
   const offerCreated = useRef(false);
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
@@ -53,11 +51,11 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
     const joinRoom = async () => {
       try {
-        const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
-          name: userName,
-          role: 'CANDIDATE',
-        });
+        const res = await axiosInstance.post(`/rooms/${roomId}/join`, { name: userName });
         console.log('🧩 Joined room:', res.data);
+
+        // ✅ First person becomes offerer
+        isOfferer.current = res.data.count === 1;
         await setupConnection();
       } catch (err) {
         console.error('❌ Room join failed:', err.response?.data || err.message);
@@ -77,11 +75,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        {
-          urls: 'turn:relay1.expressturn.com:3478',
-          username: 'efree',
-          credential: 'efree',
-        },
+        { urls: 'turn:relay1.expressturn.com:3478', username: 'efree', credential: 'efree' },
       ],
     });
 
@@ -94,10 +88,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       if (pc.current.connectionState === 'connected') {
         console.log('✅ Peer connected');
         setIsConnecting(false);
-      } else if (
-        pc.current.connectionState === 'failed' ||
-        pc.current.connectionState === 'disconnected'
-      ) {
+      } else if (['failed', 'disconnected'].includes(pc.current.connectionState)) {
         console.warn('⚠️ Connection failed/disconnected');
         setIsConnecting(true);
       }
@@ -156,10 +147,16 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         });
 
         sendSignal('JOIN', { name: userName });
+
+        // 👇 Only the first person creates an offer
+        if (isOfferer.current && !offerCreated.current) {
+          offerCreated.current = true;
+          console.log('🕒 Creating offer as first user...');
+          setTimeout(createOffer, 1000);
+        }
       },
       onWebSocketError: (e) => console.error('❌ WebSocket error:', e),
-      onStompError: (frame) =>
-        console.error('❌ STOMP frame error:', frame.headers['message']),
+      onStompError: (frame) => console.error('❌ STOMP frame error:', frame.headers['message']),
     });
 
     stompClient.current = client;
@@ -201,10 +198,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         }
         break;
       case 'CHAT':
-        setChatMessages((prev) => [
-          ...prev,
-          { id: Date.now(), sender: signal.sender, text: data },
-        ]);
+        setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
       case 'CODE':
         setCode(data);
@@ -214,7 +208,18 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
   };
 
-  // 💡 Answer to Offer
+  // 💡 Offer / Answer Logic
+  const createOffer = async () => {
+    try {
+      const offer = await pc.current.createOffer();
+      await pc.current.setLocalDescription(offer);
+      sendSignal('OFFER', offer);
+      console.log('📤 Offer sent');
+    } catch (err) {
+      console.error('Offer error:', err);
+    }
+  };
+
   const handleOffer = async (offer) => {
     try {
       if (pc.current.signalingState !== 'stable') {
@@ -225,6 +230,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
       await pc.current.setLocalDescription(answer);
       sendSignal('ANSWER', answer);
       await processPendingCandidates();
+      console.log('📤 Answer sent');
     } catch (err) {
       console.error('Answer error:', err);
     }
@@ -241,7 +247,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     pendingCandidates.current = [];
   };
 
-  // 💬 Chat
+  // 💬 Chat + Code Sync
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -250,14 +256,13 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setChatInput('');
   };
 
-  // 💻 Code Sync
   const handleCodeChange = (newCode) => {
     setCode(newCode);
     clearTimeout(codeUpdateTimeout.current);
     codeUpdateTimeout.current = setTimeout(() => sendSignal('CODE', newCode), 300);
   };
 
-  // 🎤 Mic / 🎥 Cam
+  // 🎤 Mic / 🎥 Cam / 🖥 Screen Share
   const toggleMic = () => {
     const s = localStreamRef.current;
     if (s) s.getAudioTracks().forEach((t) => (t.enabled = !micOn));
@@ -270,7 +275,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     setCamOn((p) => !p);
   };
 
-  // 🖥 Screen Share
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
@@ -294,7 +298,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     }
   };
 
-  // 📴 Leave
   const leaveMeeting = () => {
     sendSignal('LEAVE', `${userName} left`);
     leaveCleanup();
@@ -307,7 +310,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     localStreamRef.current?.getTracks()?.forEach((t) => t.stop());
   };
 
-  // 🎨 Toggle Editor
   const toggleEditor = () => {
     setEditorOpen((p) => {
       if (p) setEditorMaximized(false);
@@ -315,124 +317,175 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     });
   };
 
-  // 🧩 UI (unchanged)
+  // 🧩 UI — unchanged
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
-      <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {editorOpen && (
-          <div
-            className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
-          >
-            <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
-              <span>Code Editor</span>
-              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600">
-                {editorMaximized ? <FaCompress /> : <FaExpand />}
-              </button>
-            </div>
-            <Editor
-              height="100%"
-              theme="vs-dark"
-              language="javascript"
-              value={code}
-              onChange={handleCodeChange}
-              options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }}
-            />
+  <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
+    <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
+      {editorOpen && (
+        <div
+          className={`${
+            editorMaximized ? 'w-full' : 'w-1/3'
+          } bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
+        >
+          <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
+            <span>Code Editor</span>
+            <button
+              onClick={() => setEditorMaximized((p) => !p)}
+              className="p-1 rounded hover:bg-gray-600"
+            >
+              {editorMaximized ? <FaCompress /> : <FaExpand />}
+            </button>
           </div>
-        )}
+          <Editor
+            height="100%"
+            theme="vs-dark"
+            language="javascript"
+            value={code}
+            onChange={handleCodeChange}
+            options={{
+              fontSize: 14,
+              minimap: { enabled: false },
+              automaticLayout: true,
+            }}
+          />
+        </div>
+      )}
 
-        {!editorMaximized && (
-          <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {isConnecting && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
-                Connecting...
+      {!editorMaximized && (
+        <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
+          {isConnecting && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
+              Connecting...
+            </div>
+          )}
+
+          {remoteCamOn && !isConnecting ? (
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover rounded-lg"
+            />
+          ) : (
+            !isConnecting && (
+              <div className="flex flex-col items-center justify-center text-gray-500">
+                <FaUserCircle size={120} />
+                <p className="text-lg mt-2">Waiting for others...</p>
+              </div>
+            )
+          )}
+
+          <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
+            {camOn ? (
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-400">
+                <FaUserCircle size={50} />
               </div>
             )}
-
-            {remoteCamOn && !isConnecting ? (
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
-            ) : (
-              !isConnecting && (
-                <div className="flex flex-col items-center justify-center text-gray-500">
-                  <FaUserCircle size={120} />
-                  <p className="text-lg mt-2">Waiting for others...</p>
-                </div>
-              )
-            )}
-
-            <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
-              {camOn ? (
-                <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-              ) : (
-                <div className="flex items-center justify-center h-full text-gray-400">
-                  <FaUserCircle size={50} />
-                </div>
-              )}
-            </div>
           </div>
-        )}
-
-        {!editorMaximized && chatOpen && (
-          <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
-            <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {chatMessages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.sender === userName ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`p-2 rounded-lg max-w-[75%] ${
-                      msg.sender === userName
-                        ? 'bg-teal-700 text-white self-end rounded-br-none'
-                        : 'bg-gray-700 text-gray-100 self-start rounded-bl-none'
-                    }`}
-                  >
-                    <div className="text-xs text-gray-300 font-medium mb-1">{msg.sender}</div>
-                    <div className="text-sm">{msg.text}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex p-2 border-t border-gray-700">
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendChat()}
-                placeholder="Type a message..."
-                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
-              />
-              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700">
-                <FaPaperPlane />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-between items-center mt-4">
-        <button onClick={toggleEditor} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
-          <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
-        </button>
-
-        <div className="flex justify-center gap-4">
-          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
-            {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
-          </button>
-          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
-            {camOn ? <FaVideo /> : <FaVideoSlash />}
-          </button>
-          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}>
-            <FaDesktop />
-          </button>
-          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700">
-            <FaPhoneSlash />
-          </button>
         </div>
+      )}
 
-        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
-          <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
+      {!editorMaximized && chatOpen && (
+        <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
+          <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {chatMessages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.sender === userName ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`p-2 rounded-lg max-w-[75%] ${
+                    msg.sender === userName
+                      ? 'bg-teal-700 text-white self-end rounded-br-none'
+                      : 'bg-gray-700 text-gray-100 self-start rounded-bl-none'
+                  }`}
+                >
+                  <div className="text-xs text-gray-300 font-medium mb-1">{msg.sender}</div>
+                  <div className="text-sm">{msg.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex p-2 border-t border-gray-700">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+              placeholder="Type a message..."
+              className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
+            />
+            <button
+              onClick={sendChat}
+              className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700"
+            >
+              <FaPaperPlane />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+
+    <div className="flex justify-between items-center mt-4">
+      <button
+        onClick={toggleEditor}
+        className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
+      >
+        <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
+      </button>
+
+      <div className="flex justify-center gap-4">
+        <button
+          onClick={toggleMic}
+          className={`p-3 rounded-full border ${
+            micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
+          }`}
+        >
+          {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
+        </button>
+        <button
+          onClick={toggleCam}
+          className={`p-3 rounded-full border ${
+            camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
+          }`}
+        >
+          {camOn ? <FaVideo /> : <FaVideoSlash />}
+        </button>
+        <button
+          onClick={toggleScreenShare}
+          className={`p-3 rounded-full border ${
+            screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'
+          }`}
+        >
+          <FaDesktop />
+        </button>
+        <button
+          onClick={leaveMeeting}
+          className="p-3 rounded-full bg-red-600 hover:bg-red-700"
+        >
+          <FaPhoneSlash />
         </button>
       </div>
+
+      <button
+        onClick={() => setChatOpen((p) => !p)}
+        className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
+      >
+        <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
+      </button>
     </div>
-  );
+  </div>
+);
+
 };
 
 export default MeetingRoom;

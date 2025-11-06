@@ -26,9 +26,7 @@ const RecruiterRoom = () => {
   const [chatOpen, setChatOpen] = useState(true);
   const [remoteCamOn, setRemoteCamOn] = useState(false);
   const [editorMaximized, setEditorMaximized] = useState(false);
-  const [chatMessages, setChatMessages] = useState([
-    { id: 1, sender: 'System', text: 'Welcome to the meeting!' },
-  ]);
+  const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome to the meeting!' }]);
   const [chatInput, setChatInput] = useState('');
   const [isConnecting, setIsConnecting] = useState(true);
 
@@ -43,7 +41,7 @@ const RecruiterRoom = () => {
   const pendingCandidates = useRef([]);
   const joinedRef = useRef(false);
 
-  // 🔹 Recruiter always acts as offerer
+  // Recruiter always acts as offerer
   const isOfferer = useRef(true);
 
   // 🔹 Join Room
@@ -71,7 +69,6 @@ const RecruiterRoom = () => {
   // ⚙️ Setup WebRTC + STOMP
   const setupConnection = async () => {
     if (pc.current) return;
-
     setIsConnecting(true);
 
     pc.current = new RTCPeerConnection({
@@ -93,12 +90,9 @@ const RecruiterRoom = () => {
     pc.current.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.current.connectionState);
       if (pc.current.connectionState === 'connected') {
-        console.log('✅ Peer connected');
+        console.log('✅ Peer connected successfully!');
         setIsConnecting(false);
-      } else if (
-        pc.current.connectionState === 'failed' ||
-        pc.current.connectionState === 'disconnected'
-      ) {
+      } else if (['disconnected', 'failed'].includes(pc.current.connectionState)) {
         console.warn('⚠️ Connection lost.');
         setIsConnecting(true);
       }
@@ -126,7 +120,7 @@ const RecruiterRoom = () => {
       setIsConnecting(false);
     };
 
-    // 🧩 Local Media setup before signaling
+    // 🧩 Local Media Setup
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
@@ -163,6 +157,7 @@ const RecruiterRoom = () => {
 
         sendSignal('JOIN', { name: userName });
 
+        // Recruiter (offerer) creates offer once connected
         if (isOfferer.current && !offerCreated.current) {
           offerCreated.current = true;
           console.log('🕒 Creating offer as recruiter...');
@@ -219,13 +214,9 @@ const RecruiterRoom = () => {
     }
   };
 
-  // 💡 Offer/Answer Handlers (with rollback-safe state)
+  // 💡 Offer/Answer Handlers
   const createOffer = async () => {
     try {
-      if (pc.current.signalingState !== 'stable') {
-        console.warn('⚠️ Rolling back unstable offer state');
-        await pc.current.setLocalDescription({ type: 'rollback' });
-      }
       const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       sendSignal('OFFER', offer);
@@ -237,15 +228,12 @@ const RecruiterRoom = () => {
 
   const handleOffer = async (offer) => {
     try {
-      if (pc.current.signalingState !== 'stable') {
-        console.warn('⚠️ Rolling back unstable state before setting remote offer');
-        await pc.current.setLocalDescription({ type: 'rollback' });
-      }
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
       sendSignal('ANSWER', answer);
       await processPendingCandidates();
+      console.log('📤 Answer sent');
     } catch (err) {
       console.error('Answer error:', err);
     }
@@ -330,118 +318,179 @@ const RecruiterRoom = () => {
   };
 
   // 🧩 UI (unchanged)
-  return (
-    <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
-      <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {editorOpen && (
-          <div className={`${editorMaximized ? 'w-full' : 'w-1/4'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
-            <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
-              <span>Code Editor</span>
-              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600">
-                {editorMaximized ? <FaCompress /> : <FaExpand />}
-              </button>
-            </div>
-            <div className="flex-1">
-              <Editor
-                height="100%"
-                theme="vs-dark"
-                defaultLanguage="javascript"
-                defaultValue="// Write your code here..."
-                options={{
-                  fontSize: 13,
-                  minimap: { enabled: false },
-                  automaticLayout: true,
-                }}
-              />
-            </div>
+ return (
+  <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
+    <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
+      {editorOpen && (
+        <div
+          className={`${
+            editorMaximized ? 'w-full' : 'w-1/4'
+          } bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
+        >
+          <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
+            <span>Code Editor</span>
+            <button
+              onClick={() => setEditorMaximized((p) => !p)}
+              className="p-1 rounded hover:bg-gray-600"
+            >
+              {editorMaximized ? <FaCompress /> : <FaExpand />}
+            </button>
           </div>
-        )}
+          <div className="flex-1">
+            <Editor
+              height="100%"
+              theme="vs-dark"
+              defaultLanguage="javascript"
+              defaultValue="// Write your code here..."
+              options={{
+                fontSize: 13,
+                minimap: { enabled: false },
+                automaticLayout: true,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
-        {!editorMaximized && (
-          <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {isConnecting && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
-                Connecting...
+      {!editorMaximized && (
+        <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
+          {isConnecting && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
+              Connecting...
+            </div>
+          )}
+
+          {remoteCamOn && !isConnecting ? (
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover rounded-lg"
+            />
+          ) : (
+            !isConnecting && (
+              <div className="flex flex-col items-center justify-center text-gray-500">
+                <FaUserCircle size={120} />
+                <p className="text-lg mt-2">Waiting for others...</p>
+              </div>
+            )
+          )}
+
+          <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
+            {camOn ? (
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-400">
+                <FaUserCircle size={50} />
               </div>
             )}
-
-            {remoteCamOn && !isConnecting ? (
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover rounded-lg" />
-            ) : (
-              !isConnecting && (
-                <div className="flex flex-col items-center justify-center text-gray-500">
-                  <FaUserCircle size={120} />
-                  <p className="text-lg mt-2">Waiting for others...</p>
-                </div>
-              )
-            )}
-
-            <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
-              {camOn ? (
-                <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-              ) : (
-                <div className="flex items-center justify-center h-full text-gray-400">
-                  <FaUserCircle size={50} />
-                </div>
-              )}
-            </div>
           </div>
-        )}
-
-        {!editorMaximized && chatOpen && (
-          <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
-            <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-2">
-              {chatMessages.map((msg) => (
-                <div key={msg.id} className={`p-2 rounded ${msg.sender === userName ? 'bg-teal-800/30 ml-auto' : 'bg-gray-700/50'}`}>
-                  <div className="text-xs text-gray-300 font-medium">{msg.sender}</div>
-                  <div className="text-sm">{msg.text}</div>
-                </div>
-              ))}
-            </div>
-            <div className="flex p-2 border-t border-gray-700">
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendChat()}
-                placeholder="Type a message..."
-                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
-              />
-              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700">
-                <FaPaperPlane />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-between items-center mt-4">
-        <button onClick={toggleEditor} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
-          <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
-        </button>
-
-        <div className="flex justify-center gap-4">
-          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
-            {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
-          </button>
-          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}>
-            {camOn ? <FaVideo /> : <FaVideoSlash />}
-          </button>
-          <button onClick={toggleScreenShare} className={`p-3 rounded-full border ${screenSharing ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}>
-            <FaDesktop />
-          </button>
-          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700">
-            <FaPhoneSlash />
-          </button>
         </div>
+      )}
 
-        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2">
-          <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
+      {!editorMaximized && chatOpen && (
+        <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
+          <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-2">
+            {chatMessages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`p-2 rounded ${
+                  msg.sender === userName
+                    ? 'bg-teal-800/30 ml-auto'
+                    : 'bg-gray-700/50'
+                }`}
+              >
+                <div className="text-xs text-gray-300 font-medium">
+                  {msg.sender}
+                </div>
+                <div className="text-sm">{msg.text}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex p-2 border-t border-gray-700">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+              placeholder="Type a message..."
+              className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
+            />
+            <button
+              onClick={sendChat}
+              className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700"
+            >
+              <FaPaperPlane />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+
+    <div className="flex justify-between items-center mt-4">
+      <button
+        onClick={toggleEditor}
+        className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
+      >
+        <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
+      </button>
+
+      <div className="flex justify-center gap-4">
+        <button
+          onClick={toggleMic}
+          className={`p-3 rounded-full border ${
+            micOn
+              ? 'border-teal-400 text-teal-400'
+              : 'border-red-500 text-red-500'
+          }`}
+        >
+          {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
+        </button>
+        <button
+          onClick={toggleCam}
+          className={`p-3 rounded-full border ${
+            camOn
+              ? 'border-teal-400 text-teal-400'
+              : 'border-red-500 text-red-500'
+          }`}
+        >
+          {camOn ? <FaVideo /> : <FaVideoSlash />}
+        </button>
+        <button
+          onClick={toggleScreenShare}
+          className={`p-3 rounded-full border ${
+            screenSharing
+              ? 'border-teal-400 text-teal-400'
+              : 'border-gray-400 text-gray-400'
+          }`}
+        >
+          <FaDesktop />
+        </button>
+        <button
+          onClick={leaveMeeting}
+          className="p-3 rounded-full bg-red-600 hover:bg-red-700"
+        >
+          <FaPhoneSlash />
         </button>
       </div>
+
+      <button
+        onClick={() => setChatOpen((p) => !p)}
+        className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
+      >
+        <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
+      </button>
     </div>
-  );
+  </div>
+);
+
 };
 
 export default RecruiterRoom;
