@@ -174,48 +174,50 @@ const MeetingRoom = () => {
           </div>
         )}
 
+        
         {/* Video Section */}
         {!editorMaximized && (
-          <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
+        <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
             {isConnecting && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Connecting...
-              </div>
+            </div>
             )}
 
             {remoteCamOn && !isConnecting ? (
-              <video
-                ref={remoteVideoRef}
+            <video
+                ref={webRTCRemoteVideo} // ✅ FIXED
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover rounded-lg"
-              />
+            />
             ) : (
-              !isConnecting && (
+            !isConnecting && (
                 <div className="flex flex-col items-center justify-center text-gray-500">
-                  <FaUserCircle size={120} />
-                  <p className="text-lg mt-2">Waiting for others...</p>
+                <FaUserCircle size={120} />
+                <p className="text-lg mt-2">Waiting for others...</p>
                 </div>
-              )
+            )
             )}
 
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
-              {camOn ? (
+            {camOn ? (
                 <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
+                ref={webRTCLocalVideo} // ✅ FIXED
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
                 />
-              ) : (
+            ) : (
                 <div className="flex items-center justify-center h-full text-gray-400">
-                  <FaUserCircle size={50} />
+                <FaUserCircle size={50} />
                 </div>
-              )}
+            )}
             </div>
-          </div>
+        </div>
         )}
+
 
         {/* Chat Section */}
         {!editorMaximized && chatOpen && (
