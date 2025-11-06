@@ -10,6 +10,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStream = useRef(null);
+  const initializedRef = useRef(false); // ✅ Prevent double init in Strict Mode
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -28,8 +29,12 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     [signaling]
   );
 
-  // ✅ Setup peer connection
+  // ✅ Setup peer connection safely
   useEffect(() => {
+    // Prevent duplicate setup in StrictMode (Next.js dev)
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -43,6 +48,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     });
     pcRef.current = pc;
 
+    // 🔗 Remote stream
     pc.ontrack = (event) => {
       console.log('🎥 Remote stream received');
       if (remoteVideoRef.current) {
@@ -51,12 +57,14 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     };
 
+    // 🧊 Send ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         safeSend('candidate', event.candidate);
       }
     };
 
+    // 🔎 Monitor state
     pc.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.connectionState);
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
@@ -64,15 +72,15 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     };
 
-    // 🎥 Get local media
+    // 🎥 Get local media safely
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStream.current = stream;
 
-        // ⚙️ Prevent "InvalidStateError" — check if connection still open
+        // ✅ Skip if PC closed during async getUserMedia
         if (!pcRef.current || pcRef.current.signalingState === 'closed') {
-          console.warn('⚠️ Skipping addTrack because connection already closed');
+          console.warn('⚠️ Skipping addTrack — connection closed');
           return;
         }
 
@@ -94,9 +102,10 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     })();
 
-    // 🧹 Cleanup
+    // 🧹 Cleanup safely
     return () => {
-      if (pcRef.current?.signalingState !== 'closed') {
+      console.log('🧹 Cleaning up WebRTC...');
+      if (pcRef.current && pcRef.current.signalingState !== 'closed') {
         pcRef.current.close();
       }
       localStream.current?.getTracks().forEach((t) => t.stop());
@@ -110,20 +119,20 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       if (!pc) return;
 
       switch (type.toLowerCase()) {
-        case 'offer': {
+        case 'offer':
           console.log('📩 Offer received');
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           safeSend('answer', answer);
           break;
-        }
-        case 'answer': {
+
+        case 'answer':
           console.log('📩 Answer received');
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           break;
-        }
-        case 'candidate': {
+
+        case 'candidate':
           console.log('📩 ICE candidate received');
           try {
             await pc.addIceCandidate(new RTCIceCandidate(data));
@@ -131,7 +140,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
             console.warn('⚠️ Failed to add ICE candidate:', err);
           }
           break;
-        }
+
         default:
           console.log(`ℹ️ Unknown signal type: ${type}`);
       }
