@@ -3,31 +3,32 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * useWebRTC Hook
- * ------------------------
- * Handles peer connection setup, offer/answer exchange,
- * and ICE candidate handling between two users.
+ * Handles offer/answer, ICE candidates, media setup, and signaling.
  */
-export function useWebRTC({ sendSignal, isOfferer }) {
+export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
+  const pcRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const pcRef = useRef(null);
+  const localStream = useRef(null);
+
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [started, setStarted] = useState(false);
 
-  const pendingCandidates = useRef([]);
-
-  // ✅ Safe wrapper to send signaling messages
   const safeSend = useCallback(
     (type, data) => {
-      if (typeof sendSignal !== 'function') {
-        console.warn(`⚠️ Tried to send before signaling ready: ${type}`);
+      if (!signaling?.send || typeof signaling.send !== 'function') {
+        console.warn('⚠️ Tried to send before signaling ready:', type);
         return;
       }
       console.log(`📤 Sending ${type}`);
-      sendSignal(type, data);
+      signaling.send(type, data);
     },
-    [sendSignal]
+    [signaling]
   );
 
+  // ✅ Setup peer connection
   useEffect(() => {
     const pc = new RTCPeerConnection({
       iceServers: [
@@ -42,36 +43,17 @@ export function useWebRTC({ sendSignal, isOfferer }) {
     });
     pcRef.current = pc;
 
-    // Local media setup
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play?.().catch(() => {});
-        }
-        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-        console.log('✅ Local media ready');
-      })
-      .catch((err) => {
-        console.error('❌ Failed to access camera/mic:', err);
-      });
-
-    // Remote track
     pc.ontrack = (event) => {
-      console.log('🎥 Remote track received');
+      console.log('🎥 Remote stream received');
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        remoteVideoRef.current.play?.().catch(() => {});
+        onRemoteStream?.(event.streams[0]);
       }
     };
 
-    // Send ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         safeSend('candidate', event.candidate);
-      } else {
-        console.log('✅ ICE candidate gathering complete');
       }
     };
 
@@ -79,85 +61,115 @@ export function useWebRTC({ sendSignal, isOfferer }) {
       console.log('🔗 Connection state:', pc.connectionState);
     };
 
-    setStarted(true);
-    return () => pc.close();
-  }, [safeSend]);
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localStream.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play?.().catch(() => {});
+        }
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        console.log('✅ Local media ready');
+        setStarted(true);
+      } catch (err) {
+        console.error('❌ Failed to access media devices:', err);
+      }
+    })();
 
-  // Handle incoming signaling messages
-  const handleSignal = async ({ type, data }) => {
+    return () => {
+      pc.close();
+      localStream.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, [safeSend, onRemoteStream]);
+
+  // ✅ Handle incoming signals
+  const handleSignal = useCallback(
+    async ({ type, data }) => {
+      const pc = pcRef.current;
+      if (!pc) return;
+
+      switch (type.toLowerCase()) {
+        case 'offer': {
+          console.log('📩 Offer received');
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          safeSend('answer', answer);
+          break;
+        }
+        case 'answer': {
+          console.log('📩 Answer received');
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          break;
+        }
+        case 'candidate': {
+          console.log('📩 ICE candidate received');
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(data));
+          } catch (err) {
+            console.warn('⚠️ Failed to add ICE candidate:', err);
+          }
+          break;
+        }
+        default:
+          console.log(`ℹ️ Unknown signal type: ${type}`);
+      }
+    },
+    [safeSend]
+  );
+
+  // ✅ Offerer creates offer after stream ready
+  const start = useCallback(async () => {
+    if (!isOfferer || !started) return;
     const pc = pcRef.current;
-    if (!pc) return;
+    console.log('🧠 Creating and sending offer...');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    safeSend('offer', offer);
+  }, [isOfferer, started, safeSend]);
 
-    switch (type.toLowerCase()) {
-      case 'offer': {
-        console.log('📩 Offer received');
-        await pc.setRemoteDescription(new RTCSessionDescription(data));
+  // ✅ Toggle mic
+  const toggleMic = () => {
+    const enabled = !micOn;
+    localStream.current?.getAudioTracks().forEach((t) => (t.enabled = enabled));
+    setMicOn(enabled);
+  };
 
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        safeSend('answer', answer);
+  // ✅ Toggle camera
+  const toggleCam = () => {
+    const enabled = !camOn;
+    localStream.current?.getVideoTracks().forEach((t) => (t.enabled = enabled));
+    setCamOn(enabled);
+  };
 
-        // Apply queued ICE candidates
-        for (const c of pendingCandidates.current) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(c));
-          } catch (err) {
-            console.warn('ICE apply failed:', err);
-          }
-        }
-        pendingCandidates.current = [];
-        break;
-      }
-
-      case 'answer': {
-        console.log('📩 Answer received');
-        await pc.setRemoteDescription(new RTCSessionDescription(data));
-
-        // Apply queued ICE candidates
-        for (const c of pendingCandidates.current) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(c));
-          } catch (err) {
-            console.warn('ICE apply failed:', err);
-          }
-        }
-        pendingCandidates.current = [];
-        break;
-      }
-
-      case 'candidate': {
-        console.log('📩 Candidate received');
-        const candidate = new RTCIceCandidate(data);
-        if (pc.remoteDescription) {
-          await pc.addIceCandidate(candidate);
-        } else {
-          console.log('🧊 Queued ICE candidate');
-          pendingCandidates.current.push(candidate);
-        }
-        break;
-      }
-
-      default:
-        console.log(`ℹ️ Unknown signal type: ${type}`);
+  // ✅ Toggle screen sharing
+  const toggleScreenShare = async () => {
+    if (!screenSharing) {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+      sender?.replaceTrack(screenTrack);
+      screenTrack.onended = () => toggleScreenShare();
+      setScreenSharing(true);
+    } else {
+      const camTrack = localStream.current.getVideoTracks()[0];
+      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+      sender?.replaceTrack(camTrack);
+      setScreenSharing(false);
     }
   };
 
-  // Offerer creates the offer
-  useEffect(() => {
-    if (!isOfferer || !started) return;
-
-    const pc = pcRef.current;
-    const createOffer = async () => {
-      console.log('🧠 Creating and sending offer...');
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      safeSend('offer', offer);
-    };
-
-    // Slight delay to ensure signaling connection is ready
-    const timeout = setTimeout(createOffer, 1000);
-    return () => clearTimeout(timeout);
-  }, [isOfferer, started, safeSend]);
-
-  return { localVideoRef, remoteVideoRef, handleSignal };
+  return {
+    localVideoRef,
+    remoteVideoRef,
+    handleSignal,
+    micOn,
+    camOn,
+    toggleMic,
+    toggleCam,
+    toggleScreenShare,
+    start,
+    localStream,
+  };
 }
