@@ -1,178 +1,150 @@
 'use client';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
- * WebRTC Hook
- * - First user (count === 1) becomes offerer, but ONLY sends offer after it sees a `join` from peer
- * - Queues ICE candidates until remoteDescription is set
- * - Exposes start/stop and media toggles
+ * useWebRTC Hook
+ * ------------------------
+ * Handles peer connection setup, offer/answer exchange,
+ * and ICE candidate handling between two users.
  */
-export function useWebRTC({ isOfferer, signaling, onRemoteStream }) {
-  const pc = useRef(null);
-  const localStream = useRef(null);
-  const pendingRemoteCandidates = useRef([]);
-  const [connectionState, setConnectionState] = useState('new');
-  const [iceState, setIceState] = useState('new');
-  const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
-  const offerSentRef = useRef(false);
-  const startedRef = useRef(false);
+export function useWebRTC({ sendSignal, isOfferer }) {
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const pcRef = useRef(null);
+  const [started, setStarted] = useState(false);
 
-  const createPeer = () => {
-    const peer = new RTCPeerConnection({
+  const pendingCandidates = useRef([]);
+
+  useEffect(() => {
+    const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Add your TURN here for production reliability
+        // Optional TURN server (use for production)
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
       ],
     });
+    pcRef.current = pc;
 
-    peer.onconnectionstatechange = () => {
-      setConnectionState(peer.connectionState);
-      if (peer.connectionState === 'failed') {
-        // Try ICE restart defensively
-        (async () => {
-          try {
-            const offer = await peer.createOffer({ iceRestart: true });
-            await peer.setLocalDescription(offer);
-            signaling.send('offer', offer);
-          } catch (e) {
-            console.warn('[useWebRTC] ICE restart failed:', e);
-          }
-        })();
-      }
-    };
-
-    peer.oniceconnectionstatechange = () => setIceState(peer.iceConnectionState);
-
-    peer.onicecandidate = (e) => {
-      if (e.candidate) {
-        signaling.send('candidate', e.candidate.toJSON());
-      }
-    };
-
-    peer.ontrack = (evt) => {
-      const remoteStream = evt.streams?.[0];
-      if (remoteStream) onRemoteStream?.(remoteStream);
-    };
-
-    return peer;
-  };
-
-  const start = useCallback(async () => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-
-    pc.current = createPeer();
-
-    // local media
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 360 } },
-      audio: true,
-    });
-    localStream.current = stream;
-    stream.getTracks().forEach(t => pc.current.addTrack(t, stream));
-  }, [onRemoteStream]);
-
-  const stop = useCallback(() => {
-    try { pc.current?.close(); } catch {}
-    pc.current = null;
-    try { localStream.current?.getTracks()?.forEach(t => t.stop()); } catch {}
-    startedRef.current = false;
-    offerSentRef.current = false;
-    pendingRemoteCandidates.current = [];
-  }, []);
-
-  // Handle signaling messages from useSignaling
-  const handleSignal = useCallback(async (msg) => {
-    if (!pc.current) return;
-    const type = String(msg.type || '').toLowerCase();
-    const data = msg.data;
-
-    switch (type) {
-      case 'join': {
-        // If we're designated offerer, send offer only AFTER seeing the other peer join
-        if (isOfferer && !offerSentRef.current) {
-          offerSentRef.current = true; // lock to prevent duplicate offers
-          const offer = await pc.current.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true,
-          });
-          await pc.current.setLocalDescription(offer);
-          signaling.send('offer', offer);
+    // Local media setup
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play?.().catch(() => {});
         }
-        break;
-      }
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+        console.log('✅ Local media ready');
+      })
+      .catch((err) => {
+        console.error('❌ Failed to access camera/mic:', err);
+      });
 
+    // Remote track
+    pc.ontrack = (event) => {
+      console.log('🎥 Remote track received');
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        remoteVideoRef.current.play?.().catch(() => {});
+      }
+    };
+
+    // Send ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('📤 Sending ICE candidate');
+        sendSignal('candidate', event.candidate);
+      } else {
+        console.log('✅ ICE candidate gathering complete');
+      }
+    };
+
+    // Connection state monitoring
+    pc.onconnectionstatechange = () => {
+      console.log('🔗 Connection state:', pc.connectionState);
+    };
+
+    setStarted(true);
+    return () => pc.close();
+  }, [sendSignal]);
+
+  // Handle incoming signaling messages
+  const handleSignal = async ({ type, data }) => {
+    const pc = pcRef.current;
+    if (!pc) return;
+
+    switch (type.toLowerCase()) {
       case 'offer': {
-        // We are the answerer
-        if (!pc.current.currentRemoteDescription) {
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          const answer = await pc.current.createAnswer();
-          await pc.current.setLocalDescription(answer);
-          signaling.send('answer', answer);
+        console.log('📩 Offer received');
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
 
-          // Flush queued ICE
-          for (const c of pendingRemoteCandidates.current) {
-            try { await pc.current.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal('answer', answer);
+
+        // Apply queued ICE candidates after setting remote description
+        for (const c of pendingCandidates.current) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(c));
+          } catch (err) {
+            console.warn('ICE apply failed:', err);
           }
-          pendingRemoteCandidates.current = [];
         }
+        pendingCandidates.current = [];
         break;
       }
 
       case 'answer': {
-        // We are the offerer
-        if (!pc.current.currentRemoteDescription) {
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
+        console.log('📩 Answer received');
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
 
-          // Flush queued ICE
-          for (const c of pendingRemoteCandidates.current) {
-            try { await pc.current.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+        // Apply queued candidates now
+        for (const c of pendingCandidates.current) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(c));
+          } catch (err) {
+            console.warn('ICE apply failed:', err);
           }
-          pendingRemoteCandidates.current = [];
         }
+        pendingCandidates.current = [];
         break;
       }
 
       case 'candidate': {
-        if (pc.current.currentRemoteDescription) {
-          try { await pc.current.addIceCandidate(new RTCIceCandidate(data)); } catch {}
+        console.log('📩 Candidate received');
+        const candidate = new RTCIceCandidate(data);
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(candidate);
         } else {
-          pendingRemoteCandidates.current.push(data);
+          console.log('🧊 Queued ICE candidate');
+          pendingCandidates.current.push(candidate);
         }
         break;
       }
-
-      case 'leave': {
-        stop();
-        break;
-      }
     }
-  }, [isOfferer, signaling, stop]);
-
-  // media toggles
-  const toggleMic = useCallback(() => {
-    const s = localStream.current;
-    if (s) s.getAudioTracks().forEach(t => (t.enabled = !micOn));
-    setMicOn(v => !v);
-  }, [micOn]);
-
-  const toggleCam = useCallback(() => {
-    const s = localStream.current;
-    if (s) s.getVideoTracks().forEach(t => (t.enabled = !camOn));
-    setCamOn(v => !v);
-  }, [camOn]);
-
-  return {
-    start,
-    stop,
-    pc,
-    localStream,
-    connectionState,
-    iceState,
-    micOn, camOn,
-    toggleMic, toggleCam,
-    handleSignal, // <- pass this to useSignaling onMessage
   };
+
+  // Offerer: only create offer after local stream ready and peer joined
+  useEffect(() => {
+    if (!isOfferer || !started) return;
+
+    const pc = pcRef.current;
+    const createOffer = async () => {
+      console.log('🧠 Creating and sending offer...');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal('offer', offer);
+    };
+
+    // Delay a bit to ensure the other peer is ready
+    const timeout = setTimeout(createOffer, 1000);
+    return () => clearTimeout(timeout);
+  }, [isOfferer, started, sendSignal]);
+
+  return { localVideoRef, remoteVideoRef, handleSignal };
 }
