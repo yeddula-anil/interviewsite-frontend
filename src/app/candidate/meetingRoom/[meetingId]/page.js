@@ -1,7 +1,10 @@
 'use client';
-import React, { useState, useRef, useEffect } from 'react';
-import dynamic from 'next/dynamic';
-import { useParams } from 'next/navigation';
+// ✅ FIX: Import lazy and Suspense from React
+import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
+// ✅ FIX: Removed next/dynamic import
+// import dynamic from 'next/dynamic';
+// ✅ FIX: Changed from next/navigation to react-router-dom
+import { useParams } from 'react-router-dom';
 import {
   FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
   FaDesktop, FaPhoneSlash, FaComments, FaCode,
@@ -11,7 +14,8 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import axiosInstance from '@/utils/axiosInstance';
 
-const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+// ✅ FIX: Use React.lazy for dynamic import
+const Editor = lazy(() => import('@monaco-editor/react'));
 
 const MeetingRoom = ({ userName: propName = 'User' }) => {
   const params = useParams();
@@ -39,8 +43,6 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const stompClient = useRef(null);
   const connectedRef = useRef(false);
   const joinedRef = useRef(false);
-  const isOfferer = useRef(false);
-  const offerCreated = useRef(false);
   const pendingCandidates = useRef([]);
   const codeUpdateTimeout = useRef(null);
 
@@ -58,9 +60,11 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
 
     (async () => {
       try {
-        const res = await axiosInstance.post(`/rooms/${roomId}/join`, { name: userName });
+        const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
+          name: userName,
+          role: 'CANDIDATE',
+        });
         log.info('🧩 Joined room:', res.data);
-        isOfferer.current = res.data.count === 1; // first user = offerer
         await setupConnection();
       } catch (err) {
         log.err('❌ Room join failed:', err?.response?.data || err?.message);
@@ -74,7 +78,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   const setupConnection = async () => {
     if (pc.current) return;
     setIsConnecting(true);
-    log.info('⚙️ Setting up RTCPeerConnection...');
+    log.info('⚙️ Setting up RTCPeerConnection (as Answerer)...');
 
     pc.current = new RTCPeerConnection({
       iceServers: [
@@ -154,14 +158,8 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
           handleSignal(signal);
         });
 
+        // Send JOIN signal to notify recruiter we are ready
         sendSignal('JOIN', { name: userName });
-
-        // 👇 Create offer if this user is the offerer
-        if (isOfferer.current && !offerCreated.current) {
-          offerCreated.current = true;
-          log.info('🕒 Creating offer as first user...');
-          setTimeout(createOffer, 1500);
-        }
       },
       onWebSocketError: (e) => log.err('WebSocket error:', e),
       onStompError: (f) => log.err('STOMP error:', f?.headers?.message),
@@ -190,20 +188,17 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
     switch (type) {
       case 'OFFER':
         log.info('📩 Offer received');
-        await handleOffer(data);
+        await handleOffer(data); // This user is answerer
         break;
       case 'ANSWER':
-        if (!pc.current.remoteDescription) {
-          log.info('📩 Answer received');
-          await pc.current.setRemoteDescription(new RTCSessionDescription(data));
-          await processPendingCandidates();
-          setIsConnecting(false);
-        }
+        log.info('📩 Answer received (ignoring, as this is Answerer)');
         break;
       case 'CANDIDATE':
+        log.info('📩 Candidate received');
         if (pc.current.remoteDescription) {
           await pc.current.addIceCandidate(new RTCIceCandidate(data));
         } else {
+          log.info('🧊 Queuing candidate');
           pendingCandidates.current.push(data);
         }
         break;
@@ -211,6 +206,7 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
       case 'CODE':
+        log.info('⌨️ Code received');
         setCode(data);
         break;
       default:
@@ -219,19 +215,9 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   };
 
   // --- Offer / Answer
-  const createOffer = async () => {
-    try {
-      const offer = await pc.current.createOffer();
-      await pc.current.setLocalDescription(offer);
-      sendSignal('OFFER', offer);
-      log.info('📤 Offer sent');
-    } catch (err) {
-      log.err('Offer error:', err);
-    }
-  };
-
   const handleOffer = async (offer) => {
     try {
+      if (!pc.current) return;
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.current.createAnswer();
       await pc.current.setLocalDescription(answer);
@@ -244,6 +230,8 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
   };
 
   const processPendingCandidates = async () => {
+    if (pendingCandidates.current.length === 0) return;
+    log.info(`🧊 Processing ${pendingCandidates.current.length} pending candidates`);
     for (const c of pendingCandidates.current) {
       try {
         await pc.current.addIceCandidate(new RTCIceCandidate(c));
@@ -345,18 +333,18 @@ const MeetingRoom = ({ userName: propName = 'User' }) => {
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
-            <Editor
-              height="100%"
-              theme="vs-dark"
-              language="javascript"
-              value={code}
+            {/* ✅ FIX: Wrap lazy-loaded component in Suspense */}
+            <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
+              <Editor
+                height="100%"
+                theme="vs-dark"
               onChange={handleCodeChange}
               options={{
                 fontSize: 14,
                 minimap: { enabled: false },
-                automaticLayout: true,
-              }}
-            />
+                }}
+              />
+            </Suspense>
           </div>
         )}
 

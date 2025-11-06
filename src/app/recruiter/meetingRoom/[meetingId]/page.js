@@ -1,6 +1,10 @@
 'use client';
-import React, { useState, useRef, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+// ✅ FIX: Import lazy and Suspense from React
+import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
+// ✅ FIX: Changed from next/navigation to react-router-dom
+import { useParams } from 'react-router-dom';
+// ✅ FIX: Removed next/dynamic import
+// import dynamic from 'next/dynamic';
 import {
   FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
   FaDesktop, FaPhoneSlash, FaComments, FaCode,
@@ -8,15 +12,17 @@ import {
 } from 'react-icons/fa';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
-import Editor from '@monaco-editor/react';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthProvider';
+
+// ✅ FIX: Use React.lazy for dynamic import
+const Editor = lazy(() => import('@monaco-editor/react'));
 
 const RecruiterRoom = () => {
   const { user } = useAuth();
   const params = useParams();
   const roomId = String(params.meetingId || '');
-  const userName = useRef(user?.name || `User-${Math.floor(Math.random() * 10000)}`).current;
+  const userName = useRef(user?.name || `Recruiter-${Math.floor(Math.random() * 1000)}`).current;
 
   // UI States
   const [micOn, setMicOn] = useState(true);
@@ -31,6 +37,7 @@ const RecruiterRoom = () => {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isConnecting, setIsConnecting] = useState(true);
+  const [code, setCode] = useState('// Recruiter: Start typing here...\n');
 
   // Refs
   const localVideoRef = useRef(null);
@@ -42,6 +49,7 @@ const RecruiterRoom = () => {
   const offerCreated = useRef(false);
   const pendingCandidates = useRef([]);
   const joinedRef = useRef(false);
+  const codeUpdateTimeout = useRef(null);
 
   // Recruiter always acts as offerer
   const isOfferer = useRef(true);
@@ -50,7 +58,7 @@ const RecruiterRoom = () => {
   const log = {
     info: (...a) => console.log('[Recruiter]', ...a),
     warn: (...a) => console.warn('[Recruiter]', ...a),
-    err:  (...a) => console.error('[Recruiter]', ...a),
+    err: (...a) => console.error('[Recruiter]', ...a),
   };
 
   // 🔹 Join Room
@@ -60,7 +68,7 @@ const RecruiterRoom = () => {
 
     (async () => {
       try {
-        log.info('Joining room...', { roomId, userName, role: 'RECRUITER' });
+        log.info('Joining room...', { roomId, userName, role: 'RECRUITTER' });
         const res = await axiosInstance.post(`/rooms/${roomId}/join`, {
           name: userName,
           role: 'RECRUITER',
@@ -80,13 +88,12 @@ const RecruiterRoom = () => {
     if (pc.current) return;
 
     setIsConnecting(true);
-    log.info('Setting up RTCPeerConnection...');
+    log.info('Setting up RTCPeerConnection (as Offerer)...');
 
     pc.current = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Keep your TURN; you can add an extra fallback if needed:
         {
           urls: 'turn:openrelay.metered.ca:80',
           username: 'openrelayproject',
@@ -94,10 +101,6 @@ const RecruiterRoom = () => {
         },
       ],
     });
-
-    // Pre-create transceivers
-    pc.current.addTransceiver('video', { direction: 'sendrecv' });
-    pc.current.addTransceiver('audio', { direction: 'sendrecv' });
 
     pc.current.onconnectionstatechange = () => {
       log.info('🔗 Connection state:', pc.current.connectionState);
@@ -107,6 +110,7 @@ const RecruiterRoom = () => {
       } else if (['disconnected', 'failed'].includes(pc.current.connectionState)) {
         log.warn('⚠️ Connection lost or failed.');
         setIsConnecting(true);
+        offerCreated.current = false;
       }
     };
 
@@ -177,14 +181,8 @@ const RecruiterRoom = () => {
           }
         });
 
+        // Send our own JOIN message
         sendSignal('JOIN', { name: userName });
-
-        // Recruiter (offerer) creates offer once connected
-        if (isOfferer.current && !offerCreated.current) {
-          offerCreated.current = true;
-          log.info('🕒 Will create offer shortly (allow subscriber to attach)...');
-          setTimeout(createOffer, 1000);
-        }
       },
       onWebSocketError: (e) => log.err('❌ WebSocket error:', e),
       onStompError: (frame) => log.err('❌ STOMP frame error:', frame?.headers?.message),
@@ -202,7 +200,6 @@ const RecruiterRoom = () => {
       return;
     }
     const payload = { sender: userName, type: TYPE, data };
-    log.info('📤 Sending signal:', payload);
     stompClient.current.publish({
       destination: `/app/signal/${roomId}`,
       body: JSON.stringify(payload),
@@ -215,10 +212,6 @@ const RecruiterRoom = () => {
     const data = signal.data;
 
     switch (type) {
-      case 'OFFER':
-        log.info('📩 Offer received (from remote).');
-        await handleOffer(data);
-        break;
       case 'ANSWER':
         if (!pc.current.remoteDescription) {
           log.info('📩 Answer received (setting remote description).');
@@ -241,11 +234,23 @@ const RecruiterRoom = () => {
       case 'CHAT':
         setChatMessages((prev) => [...prev, { id: Date.now(), sender: signal.sender, text: data }]);
         break;
+      case 'CODE':
+        log.info('⌨️ Code received');
+        setCode(data);
+        break;
       case 'JOIN':
         log.info('👋 Peer joined:', data);
+        if (isOfferer.current && !offerCreated.current) {
+          offerCreated.current = true;
+          log.info('🕒 Peer joined, creating offer...');
+          createOffer();
+        }
         break;
       case 'LEAVE':
         log.info('👋 Peer left:', data);
+        offerCreated.current = false;
+        setRemoteCamOn(false);
+        setIsConnecting(true); // Wait for new user
         break;
       default:
         log.warn('⚠️ Unknown signal type:', type);
@@ -273,26 +278,6 @@ const RecruiterRoom = () => {
     }
   };
 
-  const handleOffer = async (offer) => {
-    try {
-      if (!pc.current) return;
-      if (pc.current.signalingState !== 'stable') {
-        log.warn('⚠️ Not stable before handling remote offer; rolling back first.');
-        await pc.current.setLocalDescription({ type: 'rollback' });
-      }
-      log.info('🧭 Setting remote description (offer)...');
-      await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
-      log.info('📝 Creating answer...');
-      const answer = await pc.current.createAnswer();
-      await pc.current.setLocalDescription(answer);
-      sendSignal('ANSWER', answer);
-      await processPendingCandidates();
-      log.info('✅ Answer created & sent.');
-    } catch (err) {
-      log.err('❌ Answer error:', err);
-    }
-  };
-
   const processPendingCandidates = async () => {
     if (!pendingCandidates.current.length) return;
     log.info(`🔄 Processing ${pendingCandidates.current.length} queued ICE candidates...`);
@@ -313,6 +298,15 @@ const RecruiterRoom = () => {
     sendSignal('CHAT', text);
     setChatMessages((prev) => [...prev, { id: Date.now(), sender: userName, text }]);
     setChatInput('');
+  };
+
+  // Code change handler
+  const handleCodeChange = (newCode) => {
+    setCode(newCode);
+    clearTimeout(codeUpdateTimeout.current);
+    codeUpdateTimeout.current = setTimeout(() => {
+      sendSignal('CODE', newCode);
+    }, 300);
   };
 
   // 🎤 Mic / 🎥 Cam
@@ -384,7 +378,7 @@ const RecruiterRoom = () => {
     });
   };
 
-  // 🧩 UI (unchanged)
+  // 🧩 UI (unchanged, but wired up code editor)
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
@@ -404,17 +398,18 @@ const RecruiterRoom = () => {
               </button>
             </div>
             <div className="flex-1">
-              <Editor
-                height="100%"
-                theme="vs-dark"
-                defaultLanguage="javascript"
-                defaultValue="// Write your code here..."
+              {/* ✅ FIX: Wrap lazy-loaded component in Suspense */}
+              <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
+                <Editor
+                  height="100%"
+                value={code}
+                onChange={handleCodeChange}
                 options={{
                   fontSize: 13,
                   minimap: { enabled: false },
-                  automaticLayout: true,
-                }}
-              />
+                  }}
+                />
+              </Suspense>
             </div>
           </div>
         )}
