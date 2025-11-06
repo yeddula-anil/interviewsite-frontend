@@ -1,125 +1,115 @@
 'use client';
-import { useEffect, useRef, useState, useCallback } from 'react';
-import SockJS from 'sockjs-client';
-import { Client } from '@stomp/stompjs';
+import { useEffect, useRef, useState } from 'react';
 
-/**
- * Signaling Hook (STOMP over SockJS)
- * - Subscribes to /topic/signal/{roomId}
- * - Exposes send(type, data) and disconnect()
- * - Emits onMessage for messages from other peers
- * - Sends a `join` message after connected
- */
-export function useSignaling({ roomId, userName, onMessage }) {
-  const [connected, setConnected] = useState(false);
+export function useWebRTC({ sendSignal, isOfferer }) {
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const pcRef = useRef(null);
+  const [started, setStarted] = useState(false);
+  const pendingCandidates = useRef([]);
 
-  const stompClient = useRef(null);
-  const subscriptionRef = useRef(null);
-  const connectedRef = useRef(false);
-  const joinedRef = useRef(false);
-  const activatedRef = useRef(false); // prevent double activate in Next dev/hot reload
+  // Initialize peer connection safely
+  useEffect(() => {
+    if (pcRef.current) return; // prevent duplicate
 
-  const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
+      ],
+    });
+    pcRef.current = pc;
 
-  const send = useCallback((type, data) => {
-    const client = stompClient.current;
-    if (!connectedRef.current || !client?.connected) {
-      console.warn('[useSignaling] Dropped send (not connected):', type, data);
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play?.().catch(() => {});
+        }
+        stream.getTracks().forEach((track) => {
+          if (pcRef.current) pcRef.current.addTrack(track, stream);
+        });
+        console.log('✅ Local media ready');
+      })
+      .catch((err) => {
+        console.error('❌ Failed to get user media:', err);
+      });
+
+    pc.ontrack = (event) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        remoteVideoRef.current.play?.().catch(() => {});
+      }
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && sendSignal) {
+        sendSignal('candidate', event.candidate);
+      }
+    };
+
+    pc.onconnectionstatechange = () =>
+      console.log('🔗 Connection state:', pc.connectionState);
+
+    setStarted(true);
+
+    return () => {
+      pcRef.current?.close();
+      pcRef.current = null;
+    };
+  }, [sendSignal]);
+
+  const handleSignal = async (msg) => {
+    const pc = pcRef.current;
+    if (!pc) {
+      console.warn('⚠️ handleSignal called before pcRef ready');
       return;
     }
-    const payload = {
-      type: String(type || '').toLowerCase(), // backend normalizes to UPPER; we handle case-insensitively in the app
-      data,
-      sender: userName,
-      ts: Date.now(),
-    };
-    try {
-      client.publish({
-        destination: `/app/signal/${roomId}`,
-        body: JSON.stringify(payload),
-      });
-    } catch (err) {
-      console.error('[useSignaling] publish failed:', err);
-    }
-  }, [roomId, userName]);
 
-  const disconnect = useCallback(async () => {
-    const client = stompClient.current;
-    if (!client) return;
-    try {
-      if (subscriptionRef.current) {
-        subscriptionRef.current.unsubscribe();
-        subscriptionRef.current = null;
-      }
-      connectedRef.current = false;
-      setConnected(false);
-      joinedRef.current = false;
-      activatedRef.current = false;
-      await client.deactivate(); // graceful DISCONNECT
-    } catch (err) {
-      console.warn('[useSignaling] deactivate error:', err);
-    } finally {
-      stompClient.current = null;
-    }
-  }, []);
+    const { type, data } = msg;
+    if (!type) return;
 
-  useEffect(() => {
-    if (!roomId || !userName) return;
-    if (activatedRef.current) return; // already activated in this mount
-
-    const socket = new SockJS(wsUrl);
-    const client = new Client({
-      webSocketFactory: () => socket,
-      // Heartbeats help keep managed proxies/load balancers happy
-      heartbeatIncoming: 10000, // expect server heartbeats
-      heartbeatOutgoing: 10000, // send heartbeats
-      reconnectDelay: 5000,     // auto-reconnect
-      debug: (msg) => console.log('[STOMP]', msg),
-
-      onConnect: () => {
-        connectedRef.current = true;
-        setConnected(true);
-
-        // Subscribe first (avoid offer race)
-        subscriptionRef.current = client.subscribe(`/topic/signal/${roomId}`, (frame) => {
-          try {
-            const msg = JSON.parse(frame.body);
-            if (msg.sender === userName) return; // ignore own echoes
-            onMessage?.(msg);
-          } catch (e) {
-            console.error('[useSignaling] Invalid JSON from broker:', e, frame?.body);
-          }
-        });
-
-        // Then announce presence
-        if (!joinedRef.current) {
-          joinedRef.current = true;
-          send('join', { name: userName });
+    switch (type.toLowerCase()) {
+      case 'offer':
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal('answer', answer);
+        break;
+      case 'answer':
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
+        break;
+      case 'candidate':
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(data));
+        } else {
+          pendingCandidates.current.push(data);
         }
-      },
+        break;
+    }
+  };
 
-      onWebSocketError: (e) => {
-        console.error('[STOMP] WebSocket error:', e);
-      },
+  // Create offer when ready
+  useEffect(() => {
+    if (!isOfferer || !started) return;
+    const pc = pcRef.current;
+    if (!pc) return;
 
-      onStompError: (frame) => {
-        console.error('[STOMP] Broker error:', frame?.headers?.message, frame?.body);
-      },
-
-      onDisconnect: () => {
-        console.log('[STOMP] Disconnected');
-      }
-    });
-
-    stompClient.current = client;
-    activatedRef.current = true;
-    client.activate();
-
-    // Clean up on unmount
-    return () => {
-      disconnect();
+    const makeOffer = async () => {
+      console.log('🧠 Creating offer...');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal('offer', offer);
     };
-  }, [roomId, userName, wsUrl, onMessage, send, disconnect]);
 
-  return { connected, send, disconnect };
+    setTimeout(makeOffer, 800);
+  }, [isOfferer, started, sendSignal]);
+
+  return { localVideoRef, remoteVideoRef, handleSignal };
 }

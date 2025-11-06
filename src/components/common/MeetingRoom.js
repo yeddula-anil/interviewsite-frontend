@@ -11,7 +11,6 @@ import { useSignaling } from '@/hooks/useSignaling';
 import { useWebRTC } from '@/hooks/useWebRTC';
 import { useAuth } from '@/context/AuthProvider';
 
-// Lazy-load code editor
 const Editor = lazy(() => import('@monaco-editor/react'));
 
 const MeetingRoom = () => {
@@ -37,7 +36,7 @@ const MeetingRoom = () => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
-  // 🧩 Step 1: Join the room
+  // --- Step 1: Join Room
   useEffect(() => {
     if (!roomId) return;
 
@@ -61,52 +60,39 @@ const MeetingRoom = () => {
     };
   }, [roomId, username, role]);
 
-  // 🧩 Step 2: Setup WebRTC
-  const {
-    start,
-    stop,
-    localStream,
-    micOn, camOn,
-    toggleMic, toggleCam,
-    toggleScreenShare,
-    handleSignal,
-  } = useWebRTC({
-    isOfferer,
-    signaling: {},
-    onRemoteStream: (remoteStream) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play?.().catch(() => {});
-      }
-      setRemoteCamOn(true);
-      setIsConnecting(false);
-    },
-  });
-
-  // 🧩 Step 3: Setup signaling
+  // --- Step 2: Signaling first (before WebRTC)
   const signaling = useSignaling({
     roomId,
     userName: username,
-    onMessage: handleSignal,
+    onMessage: null, // we'll link later
   });
 
-  // 🧩 Step 4: Start WebRTC once signaling is ready
-  useEffect(() => {
-    if (ready && signaling.connected) {
-      console.log('🚀 Starting WebRTC...');
-      start();
-      setIsConnecting(true);
-    }
-  }, [ready, signaling.connected, start]);
+  // --- Step 3: WebRTC, pass signaling.send as sendSignal
+  const {
+    localVideoRef: webRTCLocalVideo,
+    remoteVideoRef: webRTCRemoteVideo,
+    micOn, camOn,
+    toggleMic, toggleCam, toggleScreenShare,
+    handleSignal,
+  } = useWebRTC({
+    isOfferer,
+    sendSignal: signaling.send, // ✅ linked signaling channel
+  });
 
-  // 🧩 Step 5: Attach local stream
+  // --- Step 4: Now connect signaling.onMessage to WebRTC handler
   useEffect(() => {
-    if (localStream.current && localVideoRef.current) {
-      localVideoRef.current.srcObject = localStream.current;
+    if (signaling.connected) {
+      signaling.onMessage = handleSignal; // link dynamically after mount
     }
-  }, [localStream.current]);
+  }, [signaling.connected, handleSignal]);
 
-  // 🧩 Step 6: Chat + Code sync
+  // --- Step 5: Hook up refs
+  useEffect(() => {
+    localVideoRef.current = webRTCLocalVideo.current;
+    remoteVideoRef.current = webRTCRemoteVideo.current;
+  }, [webRTCLocalVideo, webRTCRemoteVideo]);
+
+  // --- Step 6: Chat & Code
   const sendChat = () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -120,18 +106,18 @@ const MeetingRoom = () => {
     signaling.send('code', newCode);
   };
 
-  // 🧩 Step 7: Leave cleanup
+  // --- Step 7: Leave & cleanup
   const leaveMeeting = () => {
     signaling.send('leave', `${username} left`);
-    stop();
+    signaling.disconnect?.();
     window.location.href = '/';
   };
 
-  // --- UI ---
+  // --- UI
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {/* Code Editor */}
+        {/* Editor */}
         {editorOpen && (
           <div
             className={`${
