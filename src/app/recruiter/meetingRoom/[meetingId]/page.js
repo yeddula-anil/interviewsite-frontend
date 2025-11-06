@@ -2,7 +2,7 @@
 // ✅ FIX: Import lazy and Suspense from React
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 // ✅ FIX: Changed from next/navigation to react-router-dom
-import { useParams } from 'react-router-dom';
+
 // ✅ FIX: Removed next/dynamic import
 // import dynamic from 'next/dynamic';
 import {
@@ -14,6 +14,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthProvider';
+import { useParams } from 'next/navigation';
 
 // ✅ FIX: Use React.lazy for dynamic import
 const Editor = lazy(() => import('@monaco-editor/react'));

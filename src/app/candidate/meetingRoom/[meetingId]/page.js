@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 // ✅ FIX: Removed next/dynamic import
 // import dynamic from 'next/dynamic';
 // ✅ FIX: Changed from next/navigation to react-router-dom
-import { useParams } from 'react-router-dom';
+
 import {
   FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
   FaDesktop, FaPhoneSlash, FaComments, FaCode,
@@ -13,6 +13,7 @@ import {
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import axiosInstance from '@/utils/axiosInstance';
+import { useParams } from 'next/navigation';
 
 // ✅ FIX: Use React.lazy for dynamic import
 const Editor = lazy(() => import('@monaco-editor/react'));
