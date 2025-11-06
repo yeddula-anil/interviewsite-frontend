@@ -7,7 +7,7 @@ import {
 } from 'react-icons/fa';
 import { useParams } from 'next/navigation';
 import axiosInstance from '@/utils/axiosInstance';
-import { useSignaling } from '@/hooks/useSignaling';
+import  {useSignaling} from '@/hooks/useSignaling';
 import { useWebRTC } from '@/hooks/useWebRTC';
 import { useAuth } from '@/context/AuthProvider';
 
