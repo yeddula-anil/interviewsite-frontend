@@ -59,17 +59,34 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
 
     pc.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.connectionState);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        console.warn('⚠️ Peer connection closed.');
+      }
     };
 
+    // 🎥 Get local media
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStream.current = stream;
+
+        // ⚙️ Prevent "InvalidStateError" — check if connection still open
+        if (!pcRef.current || pcRef.current.signalingState === 'closed') {
+          console.warn('⚠️ Skipping addTrack because connection already closed');
+          return;
+        }
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
           localVideoRef.current.play?.().catch(() => {});
         }
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+        stream.getTracks().forEach((track) => {
+          if (pcRef.current.signalingState !== 'closed') {
+            pc.addTrack(track, stream);
+          }
+        });
+
         console.log('✅ Local media ready');
         setStarted(true);
       } catch (err) {
@@ -77,8 +94,11 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     })();
 
+    // 🧹 Cleanup
     return () => {
-      pc.close();
+      if (pcRef.current?.signalingState !== 'closed') {
+        pcRef.current.close();
+      }
       localStream.current?.getTracks().forEach((t) => t.stop());
     };
   }, [safeSend, onRemoteStream]);
@@ -123,6 +143,10 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
   const start = useCallback(async () => {
     if (!isOfferer || !started) return;
     const pc = pcRef.current;
+    if (!pc || pc.signalingState === 'closed') {
+      console.warn('⚠️ Cannot create offer: Peer connection closed');
+      return;
+    }
     console.log('🧠 Creating and sending offer...');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
