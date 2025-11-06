@@ -31,48 +31,54 @@ export function useSignaling({ roomId, userName, onMessage }) {
   }, [roomId, userName]);
 
   useEffect(() => {
-    if (!roomId || !userName) return;
+  if (!roomId || !userName) return;
 
-    const socket = new SockJS(wsUrl);
-    const client = new Client({
-      webSocketFactory: () => socket,
-      reconnectDelay: 3000,
-      debug: (msg) => console.log('[STOMP]', msg),
-      onConnect: () => {
-        connectedRef.current = true;
-        setConnected(true);
+  if (stompClient.current && connectedRef.current) return; // already connected
 
-        // subscribe first to prevent race (ensure we can receive offer)
-        client.subscribe(`/topic/signal/${roomId}`, (frame) => {
-          try {
-            const msg = JSON.parse(frame.body);
-            if (msg.sender === userName) return; // ignore own
-            onMessage?.(msg);
-          } catch (e) {
-            console.error('[useSignaling] Invalid message:', e);
-          }
-        });
+  const socket = new SockJS(wsUrl);
+  const client = new Client({
+    webSocketFactory: () => socket,
+    reconnectDelay: 5000,
+    debug: (msg) => console.log('[STOMP]', msg),
+    onConnect: () => {
+      connectedRef.current = true;
+      setConnected(true);
 
-        // then announce presence
-        if (!joinedRef.current) {
-          joinedRef.current = true;
-          send('join', { name: userName });
+      client.subscribe(`/topic/signal/${roomId}`, (frame) => {
+        try {
+          const msg = JSON.parse(frame.body);
+          if (msg.sender === userName) return;
+          onMessage?.(msg);
+        } catch (e) {
+          console.error('[useSignaling] Invalid message:', e);
         }
-      },
-      onWebSocketError: (e) => console.error('[STOMP] WebSocket error:', e),
-      onStompError: (frame) => console.error('[STOMP] Error:', frame?.headers?.message),
-    });
+      });
 
-    stompClient.current = client;
-    client.activate();
+      if (!joinedRef.current) {
+        joinedRef.current = true;
+        send('join', { name: userName });
+      }
+    },
+    onWebSocketError: (e) => console.error('[STOMP] WebSocket error:', e),
+    onStompError: (frame) => console.error('[STOMP] Error:', frame?.headers?.message),
+  });
 
-    return () => {
-      try { client.deactivate(); } catch {}
-      connectedRef.current = false;
-      setConnected(false);
-      joinedRef.current = false;
-    };
-  }, [roomId, userName, onMessage, wsUrl, send]);
+  stompClient.current = client;
+  client.activate();
+
+  // cleanup only when unmounting
+  return () => {
+    connectedRef.current = false;
+    setConnected(false);
+    joinedRef.current = false;
+    try {
+      client.deactivate();
+    } catch (err) {
+      console.warn('Error deactivating STOMP client:', err);
+    }
+  };
+}, [roomId]); // remove userName and send from dependencies
+
 
   return { connected, send };
 }
