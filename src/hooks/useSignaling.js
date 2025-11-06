@@ -16,7 +16,7 @@ export function useSignaling({ roomId, userName, onMessage }) {
   const connectedRef = useRef(false);
   const joinedRef = useRef(false);
 
-  const wsUrl = `${process.env.NEXT_PUBLIC_WS_BASE}/ws`;
+  const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
 
   const send = useCallback((type, data) => {
     if (!connectedRef.current || !stompClient.current?.connected) {
