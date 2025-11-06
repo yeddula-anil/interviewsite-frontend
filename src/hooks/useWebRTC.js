@@ -30,11 +30,13 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
   );
 
   // ✅ Setup peer connection safely
+   // ✅ Setup peer connection safely (production-stable)
   useEffect(() => {
-    // Prevent duplicate setup in StrictMode (Next.js dev)
+    // Prevent double init
     if (initializedRef.current) return;
     initializedRef.current = true;
 
+    console.log('🎬 Initializing WebRTC...');
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -48,7 +50,7 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
     });
     pcRef.current = pc;
 
-    // 🔗 Remote stream
+    // 🔗 Handle remote tracks
     pc.ontrack = (event) => {
       console.log('🎥 Remote stream received');
       if (remoteVideoRef.current) {
@@ -57,38 +59,35 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     };
 
-    // 🧊 Send ICE candidates
+    // 🧊 ICE Candidate
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        safeSend('candidate', event.candidate);
-      }
+      if (event.candidate) safeSend('candidate', event.candidate);
     };
 
-    // 🔎 Monitor state
+    // 🔎 Connection state
     pc.onconnectionstatechange = () => {
       console.log('🔗 Connection state:', pc.connectionState);
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        console.warn('⚠️ Peer connection closed.');
-      }
     };
 
-    // 🎥 Get local media safely
+    // 🎥 Get media after PC ready
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStream.current = stream;
 
-        // ✅ Skip if PC closed during async getUserMedia
+        // Skip if PC closed (async safety)
         if (!pcRef.current || pcRef.current.signalingState === 'closed') {
           console.warn('⚠️ Skipping addTrack — connection closed');
           return;
         }
 
+        // Attach to local video
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play?.().catch(() => {});
+          await localVideoRef.current.play?.().catch(() => {});
         }
 
+        // Add tracks safely
         stream.getTracks().forEach((track) => {
           if (pcRef.current.signalingState !== 'closed') {
             pc.addTrack(track, stream);
@@ -102,15 +101,21 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream }) {
       }
     })();
 
-    // 🧹 Cleanup safely
-    return () => {
-      console.log('🧹 Cleaning up WebRTC...');
-      if (pcRef.current && pcRef.current.signalingState !== 'closed') {
-        pcRef.current.close();
-      }
+    // 🧹 Cleanup only when window unloads (not re-render)
+    const handleUnload = () => {
+      console.log('🧹 Closing WebRTC connection (window unload)');
+      pcRef.current?.close();
       localStream.current?.getTracks().forEach((t) => t.stop());
     };
-  }, [safeSend, onRemoteStream]);
+
+    window.addEventListener('beforeunload', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      // Do NOT close PC on component re-render
+      console.log('⚙️ Skipping cleanup on render change');
+    };
+  }, []); // ✅ No dependencies (runs once)
+
 
   // ✅ Handle incoming signals
   const handleSignal = useCallback(
