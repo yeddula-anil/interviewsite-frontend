@@ -91,7 +91,7 @@ const Schedule = () => {
   const handleJoin = (schedule) => {
     // if (canJoin(schedule)) {
       setSelectedMeeting(schedule);
-      router.push(`/candidate/meeting`);
+      router.push(`/meeting/${schedule.id}`);
     // } else {
     //   toast.error("You cannot join until 10 minutes before the interview");
     // }

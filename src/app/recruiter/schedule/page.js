@@ -97,7 +97,7 @@ const RecruiterSchedule = () => {
     // }
     toast.success(`Joining meeting for ${schedule.candidateEmail}`);
     setSelectedMeeting(schedule.id)
-    router.push('/candidate/meeting')
+    router.push(`/meeting/${schedule.id}`)
   };
 
   const handleMarkCompleted = async (schedule) => {

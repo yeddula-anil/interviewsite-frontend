@@ -1,4 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
+import '@stream-io/video-react-sdk/dist/css/styles.css';
+
 import "./globals.css";
 import { PreJoinProvider } from "@/context/PreJoinContext"; // <-- import here
 import { Toaster } from "react-hot-toast";

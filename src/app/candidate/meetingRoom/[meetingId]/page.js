@@ -22,7 +22,7 @@ const MeetingPage = () => {
 
   // 🧩 Step 2: Redirect to login if not authenticated
   if (!user) {
-    router.push('/login');
+    router.push('/auth/signin');
     return null;
   }
 
@@ -37,7 +37,11 @@ const MeetingPage = () => {
 
   // 🧩 Step 4: Render MeetingRoom with user details
   return (
-    <MeetingRoom key={meetingId} user={user} />
+    <MeetingRoom
+      key={meetingId}
+      meetingId={meetingId}
+      username={user.username}
+    />
   );
 };
 
