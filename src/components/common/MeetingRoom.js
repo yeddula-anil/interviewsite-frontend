@@ -1,9 +1,21 @@
 'use client';
+
 import React, { useEffect, useState, lazy, Suspense, useRef } from 'react';
 import {
-  FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
-  FaDesktop, FaPhoneSlash, FaComments, FaCode,
-  FaExpand, FaCompress, FaPaperPlane, FaRegCircle
+  FaMicrophone,
+  FaMicrophoneSlash,
+  FaVideo,
+  FaVideoSlash,
+  FaDesktop,
+  FaPhoneSlash,
+  FaComments,
+  FaCode,
+  FaExpand,
+  FaCompress,
+  FaPaperPlane,
+  FaRegCircle,
+  FaToggleOn,
+  FaToggleOff,
 } from 'react-icons/fa';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -13,18 +25,10 @@ import {
   useCallStateHooks,
   ParticipantView,
 } from '@stream-io/video-react-sdk';
-import { useAuth } from '@/context/AuthProvider';
 
 const Editor = lazy(() => import('@monaco-editor/react'));
 
-/**
- * CallUI
- * - remote video fills container (object-cover)
- * - local PIP at bottom-right
- * - name overlays bottom-left
- * - controls wired to hooks (mic/cam/screenShare)
- */
-const CallUI = ({ call, username }) => {
+const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
   const {
     useParticipants,
     useLocalParticipant,
@@ -39,22 +43,32 @@ const CallUI = ({ call, username }) => {
   const micState = useMicrophoneState();
   const screenShareState = useScreenShareState();
 
-  // safety: in rare cases hooks may be called outside a call context
   if (!camState || !micState || !screenShareState) {
-    return <div className="min-h-screen flex items-center justify-center">Call context not ready.</div>;
+    return <div className="min-h-screen flex items-center justify-center">Initializing call...</div>;
   }
 
-  const { camera, toggleCamera } = camState;
-  const { microphone, toggleMicrophone } = micState;
-  const { screenShare, toggleScreenShare } = screenShareState;
+  const { camera } = camState;
+  const { microphone } = micState;
+  const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
 
+  // ✅ detect remote participant correctly
+  const otherParticipants = participants.filter((p) => !p.isLocalParticipant);
+  const remoteParticipant = otherParticipants.length ? otherParticipants[0] : null;
+
+  // Local fallback preview
+  const localVideoRef = useRef(null);
+  const [fallbackPreviewVisible, setFallbackPreviewVisible] = useState(false);
+
+  // Chat + editor
   const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome!' }]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
   const [editorOpen, setEditorOpen] = useState(true);
   const [editorMaximized, setEditorMaximized] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
-  const [recordingSupported] = useState(false); // placeholder — server/cloud needed
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
 
   const sendChat = () => {
     const text = chatInput.trim();
@@ -63,72 +77,217 @@ const CallUI = ({ call, username }) => {
     setChatInput('');
   };
 
-  // remote participant (first non-local)
-  const remoteParticipant = participants.find((p) => !p.isLocalParticipant) || null;
-
-  // leave / cleanup
   const leaveMeeting = async () => {
     try {
+      if (recording) stopLocalRecording();
+      if (screenShare?.isEnabled) await stopScreenShare().catch(() => {});
       await call?.leave();
       await call?.client?.disconnectUser();
-    } catch (err) {
-      console.error('Leave error:', err);
+    } catch (e) {
+      console.warn('Leave error', e);
+    } finally {
+      sessionStorage.removeItem('prejoin');
+      window.location.href = '/';
     }
-    sessionStorage.removeItem('prejoin');
-    // keep client behaviour consistent with your app — go home
-    window.location.href = '/';
   };
 
-  // Styling notes:
-  // - We expect ParticipantView to take container sizing; add className props;
-  //   if SDK doesn't forward className to inner video, that'll still render
-  //   but you may need to patch SDK usage; this is the usual approach.
+  // ✅ Fixed toggles (republishes if needed)
+  const handleMicToggle = async () => {
+    try {
+      if (microphone?.isEnabled) {
+        await call.microphone.disable();
+      } else {
+        await call.microphone.enable();
+        await call.publishMicrophone?.().catch(() => {});
+      }
+    } catch (err) {
+      console.error('toggle microphone error', err);
+      alert('Unable to toggle microphone. Check permissions.');
+    }
+  };
+
+  const handleCameraToggle = async () => {
+    try {
+      if (camera?.isEnabled) {
+        await call.camera.disable();
+      } else {
+        await call.camera.enable();
+        await call.publishCamera?.().catch(() => {});
+      }
+    } catch (err) {
+      console.error('toggle camera error', err);
+      alert('Unable to toggle camera. Check permissions.');
+    }
+  };
+
+  // ✅ Reliable screen sharing
+  const handleScreenShareToggle = async () => {
+    try {
+      if (screenShare?.isEnabled) {
+        await stopScreenShare();
+      } else {
+        await call.startScreenShare?.();
+      }
+    } catch (err) {
+      console.error('screen share error', err);
+      alert('Screen sharing failed. Ensure HTTPS and allow permissions.');
+    }
+  };
+
+  // ✅ Local fallback preview if SDK doesn’t attach video immediately
+  useEffect(() => {
+    let fallbackStream = null;
+    let interval = null;
+    let mounted = true;
+
+    const attachPreview = async () => {
+      try {
+        const vt = localParticipant?.videoTrack;
+        const track = vt?.mediaStreamTrack || vt?.mediaStream?.getVideoTracks?.()?.[0];
+        if (track && localVideoRef.current) {
+          const stream = new MediaStream([track]);
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.muted = true;
+          localVideoRef.current.playsInline = true;
+          localVideoRef.current.play().catch(() => {});
+          setFallbackPreviewVisible(true);
+          return true;
+        }
+        return false;
+      } catch (err) {
+        return false;
+      }
+    };
+
+    const init = async () => {
+      const ok = await attachPreview();
+      if (!ok) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }).catch(() => null);
+        if (stream && mounted && localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.muted = true;
+          localVideoRef.current.play().catch(() => {});
+          fallbackStream = stream;
+          setFallbackPreviewVisible(true);
+        }
+        interval = setInterval(() => {
+          attachPreview().then((s) => {
+            if (s && interval) {
+              clearInterval(interval);
+              interval = null;
+            }
+          });
+        }, 700);
+      }
+    };
+
+    init();
+    return () => {
+      mounted = false;
+      if (interval) clearInterval(interval);
+      if (fallbackStream) fallbackStream.getTracks().forEach((t) => t.stop());
+    };
+  }, [localParticipant]);
+
+  // ✅ Recording (best effort)
+  const startLocalRecording = async () => {
+    try {
+      const merged = new MediaStream();
+      const addTrack = (track) => track && merged.addTrack(track);
+
+      const lv = localParticipant?.videoTrack;
+      const la = localParticipant?.audioTrack;
+      addTrack(lv?.mediaStreamTrack);
+      addTrack(la?.mediaStreamTrack);
+
+      if (remoteParticipant) {
+        const rv = remoteParticipant?.videoTrack;
+        const ra = remoteParticipant?.audioTrack;
+        addTrack(rv?.mediaStreamTrack);
+        addTrack(ra?.mediaStreamTrack);
+      }
+
+      if (!merged.getTracks().length) {
+        alert('No available tracks to record.');
+        return;
+      }
+
+      const rec = new MediaRecorder(merged, { mimeType: 'video/webm; codecs=vp9' });
+      recordedChunksRef.current = [];
+      rec.ondataavailable = (e) => e.data.size && recordedChunksRef.current.push(e.data);
+      rec.onstop = async () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        console.log('Recording done, size:', blob.size);
+        alert('Recording finished. Implement upload if needed.');
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setRecording(true);
+      console.log('Recording started');
+    } catch (err) {
+      console.error('startLocalRecording', err);
+      alert('Recording failed.');
+    }
+  };
+
+  const stopLocalRecording = () => {
+    try {
+      recorderRef.current?.stop();
+      setRecording(false);
+    } catch (err) {
+      console.error('stopLocalRecording', err);
+    }
+  };
+
+  // --- UI ---
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
-        {/* LEFT: Editor */}
+        {/* === Code Editor === */}
         {editorOpen && (
           <div className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
-              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600">
+              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600 cursor-pointer">
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
             <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
-              <Editor
-                height="100%"
-                theme="vs-dark"
-                value={code}
-                onChange={(newCode) => setCode(newCode ?? code)}
-                options={{ fontSize: 14, minimap: { enabled: false } }}
-              />
+              <Editor height="100%" theme="vs-dark" value={code} onChange={(c) => setCode(c ?? code)} options={{ fontSize: 14, minimap: { enabled: false } }} />
             </Suspense>
           </div>
         )}
 
-        {/* CENTER: Video area */}
+        {/* === Video Section === */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700 overflow-hidden">
-            {/* Waiting overlay */}
-            {!remoteParticipant && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg z-10">
-                Waiting for the other participant to join...
+            {/* ✅ Waiting Overlay */}
+           {(!remoteParticipant || (!remoteParticipant.videoTrack && !remoteParticipant.audioTrack)) && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm text-gray-300 z-[10]">
+                <div className="flex flex-col items-center space-y-4">
+                  <div className="animate-pulse text-xl font-medium">
+                    Waiting for the other participant to join...
+                  </div>
+                  <div className="flex items-center space-x-2 text-sm text-gray-400">
+                    <div className="w-3 h-3 bg-teal-400 rounded-full animate-ping"></div>
+                    <span>Once they join, your interview will begin automatically.</span>
+                  </div>
+                </div>
               </div>
             )}
 
-            {/* remote video should cover the whole area */}
+
+
             <div className="w-full h-full relative">
               {remoteParticipant ? (
-                // try to force the participant view to fill and use object-fit: cover
-                <div className="w-full h-full overflow-hidden">
-                  <ParticipantView
-                    participant={remoteParticipant}
-                    className="w-full h-full"
-                    // NOTE: If ParticipantView accepts style props for video,
-                    // you could pass style={{ objectFit: 'cover' }} — depends on SDK
-                  />
-                  {/* Name overlay bottom-left */}
+                <div className="w-full h-full overflow-hidden relative">
+                  {remoteParticipant.videoTrack ? (
+                    <ParticipantView participant={remoteParticipant} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-900 text-white text-2xl font-semibold">
+                      {remoteParticipant?.user?.name || remoteParticipant?.user?.id}
+                    </div>
+                  )}
                   <div className="absolute left-4 bottom-4 z-20 bg-black/50 px-3 py-1 rounded text-sm font-medium text-white">
                     {remoteParticipant?.user?.name || remoteParticipant?.user?.id}
                   </div>
@@ -140,37 +299,35 @@ const CallUI = ({ call, username }) => {
               )}
             </div>
 
-            {/* Local PIP bottom-right */}
-            <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900 z-30 shadow-lg">
-              {localParticipant ? (
+            {/* Local PIP */}
+            <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900 z-[50] shadow-lg">
+              {localParticipant && (
                 <div className="relative w-full h-full">
-                  <ParticipantView
-                    participant={localParticipant}
-                    className="w-full h-full"
-                  />
+                  {localParticipant.videoTrack ? (
+                    <>
+                      <ParticipantView participant={localParticipant} className="w-full h-full" />
+                      <video ref={localVideoRef} style={{ display: fallbackPreviewVisible ? 'block' : 'none' }} muted playsInline />
+                    </>
+                  ) : (
+                    <video ref={localVideoRef} className="w-full h-full object-cover" muted playsInline />
+                  )}
                   <div className="absolute left-2 bottom-1 text-xs text-white bg-black/50 px-2 py-0.5 rounded">
-                    {localParticipant?.user?.name || localParticipant?.user?.id || username}
+                    {localParticipant?.user?.name || username}
                   </div>
                 </div>
-              ) : null}
+              )}
             </div>
           </div>
         )}
 
-        {/* RIGHT: Chat */}
+        {/* === Chat === */}
         {!editorMaximized && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 flex flex-col rounded-lg">
             <div className="p-2 bg-gray-700 font-medium text-sm text-center">Chat</div>
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {chatMessages.map((msg) => (
                 <div key={msg.id} className={`flex ${msg.sender === username ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`p-2 rounded-lg max-w-[75%] ${
-                      msg.sender === username
-                        ? 'bg-teal-700 text-white self-end rounded-br-none'
-                        : 'bg-gray-700 text-gray-100 self-start rounded-bl-none'
-                    }`}
-                  >
+                  <div className={`p-2 rounded-lg max-w-[75%] ${msg.sender === username ? 'bg-teal-700 text-white rounded-br-none' : 'bg-gray-700 text-gray-100 rounded-bl-none'}`}>
                     <div className="text-xs text-gray-300 font-medium mb-1">{msg.sender}</div>
                     <div className="text-sm">{msg.text}</div>
                   </div>
@@ -186,7 +343,7 @@ const CallUI = ({ call, username }) => {
                 placeholder="Type a message..."
                 className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
               />
-              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700">
+              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700 cursor-pointer">
                 <FaPaperPlane />
               </button>
             </div>
@@ -194,64 +351,46 @@ const CallUI = ({ call, username }) => {
         )}
       </div>
 
-      {/* Controls bar */}
+      {/* === Bottom Controls === */}
       <div className="flex justify-between items-center mt-4">
-        <button
-          onClick={() => setEditorOpen((p) => !p)}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={() => setEditorOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer">
           <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
 
         <div className="flex justify-center gap-4 items-center">
-          <button
-            onClick={toggleMicrophone}
-            className={`p-3 rounded-full border ${microphone.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}
-            title={microphone.isEnabled ? 'Mute' : 'Unmute'}
-          >
-            {microphone.isEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
+          {/* Mic */}
+          <button onClick={handleMicToggle} className={`p-3 rounded-full border ${microphone?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'} cursor-pointer`}>
+            {microphone?.isEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
           </button>
 
-          <button
-            onClick={toggleCamera}
-            className={`p-3 rounded-full border ${camera.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'}`}
-            title={camera.isEnabled ? 'Turn camera off' : 'Turn camera on'}
-          >
-            {camera.isEnabled ? <FaVideo /> : <FaVideoSlash />}
+          {/* Camera */}
+          <button onClick={handleCameraToggle} className={`p-3 rounded-full border ${camera?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'} cursor-pointer`}>
+            {camera?.isEnabled ? <FaVideo /> : <FaVideoSlash />}
           </button>
 
-          <button
-            onClick={toggleScreenShare}
-            className={`p-3 rounded-full border ${screenShare.isEnabled ? 'border-teal-400 text-teal-400' : 'border-gray-400 text-gray-400'}`}
-            title={screenShare.isEnabled ? 'Stop sharing' : 'Start screen share'}
-          >
+          {/* Screen share */}
+          <button onClick={handleScreenShareToggle} className={`p-3 rounded-full border ${screenShare?.isEnabled ? 'border-teal-400 text-teal-400 bg-teal-900/30' : 'border-gray-400 text-gray-400'} cursor-pointer`}>
             <FaDesktop />
           </button>
 
-          {/* Recording - placeholder */}
-          <button
-            onClick={() => {
-              if (!recordingSupported) {
-                // give user guidance for next step
-                alert('Recording is not configured. Use server/cloud recording (Stream Cloud Recording or your own media server).');
-              }
-            }}
-            className={`p-3 rounded-full border ${recordingSupported ? 'border-teal-400 text-teal-400' : 'border-gray-600 text-gray-600'}`}
-            title="Record (server-side required)"
-            disabled={!recordingSupported}
-          >
+          {/* Recording */}
+          <button onClick={() => (recording ? stopLocalRecording() : startLocalRecording())} className={`p-3 rounded-full border ${recording ? 'border-teal-400 text-teal-400' : 'border-gray-600 text-gray-600'} cursor-pointer`}>
             <FaRegCircle />
           </button>
 
-          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700" title="Leave call">
+          {/* Auto Scoring */}
+          <button onClick={() => setAutoScoring((v) => !v)} className="p-2 rounded text-sm bg-gray-800 hover:bg-gray-700 flex items-center gap-2 cursor-pointer">
+            {autoScoring ? <FaToggleOn className="text-teal-400" /> : <FaToggleOff className="text-gray-400" />}
+            <span className="text-xs">{autoScoring ? 'Auto Scoring ON' : 'Auto Scoring OFF'}</span>
+          </button>
+
+          {/* Leave */}
+          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700 cursor-pointer">
             <FaPhoneSlash />
           </button>
         </div>
 
-        <button
-          onClick={() => setChatOpen((p) => !p)}
-          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2"
-        >
+        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer">
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>
@@ -259,36 +398,23 @@ const CallUI = ({ call, username }) => {
   );
 };
 
-/**
- * MeetingRoom
- * - reads prejoin from session storage (as you already use)
- * - creates client & call, joins safely
- * - auto disconnect when the user switches tabs (visibilitychange) OR pagehide/beforeunload
- * - uses refs for client & call to ensure cleanup uses current instances
- */
 const MeetingRoom = () => {
-  const { meetingId } = useParams(); // not strictly used — we rely on prejoin to be consistent
+  const { meetingId } = useParams();
   const router = useRouter();
-
-  const clientRef = useRef(null);
-  const callRef = useRef(null);
-
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [autoScoring, setAutoScoring] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const prejoin = JSON.parse(sessionStorage.getItem('prejoin') || '{}');
-
     if (!prejoin?.meetingId) {
       router.push('/');
       return;
     }
 
-    // default role fallback
-    const role = prejoin.role || 'candidate';
-    const username = `${role}-${prejoin.name || 'Guest'}`;
+    const username = `${prejoin.role || 'candidate'}-${prejoin.name || 'Guest'}`;
 
     (async () => {
       try {
@@ -297,113 +423,50 @@ const MeetingRoom = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: username }),
         });
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err?.error || 'Token fetch failed');
-        }
-
         const { token } = await res.json();
 
         const clientInstance = StreamVideoClient.getOrCreateInstance({
           apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
-          user: { id: username, name: prejoin.name || username },
+          user: { id: username, name: prejoin.name },
           token,
         });
 
-        // keep refs so cleanup outside effect has access
-        clientRef.current = clientInstance;
-
         const callInstance = clientInstance.call('default', prejoin.meetingId);
-        callRef.current = callInstance;
+        await callInstance.join({ create: true });
 
-        // try join normally, fallback to create:true
-        try {
-          await callInstance.join();
-        } catch {
-          await callInstance.join({ create: true, timeout: 10000 });
-        }
+        // ensure tracks ready
+        await callInstance.camera.createTrack?.().catch(() => {});
+        await callInstance.microphone.createTrack?.().catch(() => {});
 
-        // limit to two participants
-        try {
-          const members = await callInstance.queryMembers({});
-          const count = (members?.members || []).length;
-          if (count > 2) {
-            alert('This interview room is full.');
-            await callInstance.leave();
-            await clientInstance.disconnectUser();
-            router.push('/');
-            return;
-          }
-        } catch (qErr) {
-          console.warn('queryMembers failed', qErr);
-        }
+        if (prejoin.camOn !== false) await callInstance.camera.enable().catch(() => {});
+        if (prejoin.micOn !== false) await callInstance.microphone.enable().catch(() => {});
 
-        if (!mounted) return;
-
-        setClient(clientInstance);
-        setCall(callInstance);
-        setIsConnecting(false);
-
-        // Apply mic/cam states from prejoin
-        try {
-          if (prejoin.micOn === false) await callInstance.microphone.disable();
-          if (prejoin.camOn === false) await callInstance.camera.disable();
-        } catch (stateErr) {
-          console.warn('apply prejoin state failed', stateErr);
+        if (mounted) {
+          setClient(clientInstance);
+          setCall(callInstance);
+          setTimeout(() => setIsConnecting(false), 400);
         }
       } catch (err) {
-        console.error('❌ Stream init error:', err);
+        console.error('init error', err);
         setIsConnecting(false);
-        // optionally route home or show UI
       }
     })();
 
-    // cleanup function uses refs (safe)
-    const cleanup = async () => {
-      try {
-        await callRef.current?.leave();
-      } catch (e) {}
-      try {
-        await clientRef.current?.disconnectUser();
-      } catch (e) {}
-      callRef.current = null;
-      clientRef.current = null;
-    };
-
-    // auto-disconnect when page is hidden (tab switch) or unload
-    const handleVisibility = () => {
-      if (document.hidden) {
-        // user switched tab or minimized
-        cleanup();
-      }
-    };
-
-    window.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('beforeunload', cleanup);
-    window.addEventListener('pagehide', cleanup);
-
     return () => {
       mounted = false;
-      cleanup();
-      window.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('beforeunload', cleanup);
-      window.removeEventListener('pagehide', cleanup);
+      call?.leave?.();
+      client?.disconnectUser?.();
     };
   }, [meetingId, router]);
 
   if (isConnecting) {
-    return (
-      <div className="flex items-center justify-center min-h-screen text-gray-400 text-lg">
-        Connecting to meeting...
-      </div>
-    );
+    return <div className="flex items-center justify-center min-h-screen text-gray-400 text-lg">Connecting to meeting...</div>;
   }
 
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
-        <CallUI call={call} username={client?.user?.name || 'Guest'} />
+        <CallUI call={call} username={JSON.parse(sessionStorage.getItem('prejoin'))?.name || 'Guest'} autoScoring={autoScoring} setAutoScoring={setAutoScoring} />
       </StreamCall>
     </StreamVideo>
   );

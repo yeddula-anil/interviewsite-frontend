@@ -15,7 +15,13 @@ const CompletedInterviews = () => {
   const [reviewText, setReviewText] = useState('');
   const { user } = useAuth();
 
-  // Fetch all completed interviews for the recruiter
+  const [stats, setStats] = useState({
+    avgScore: 0,
+    total: 0,
+    unscored: 0,
+  });
+
+  // Fetch completed interviews
   const fetchCompletedInterviews = async () => {
     if (!user?.email) return;
 
@@ -24,28 +30,33 @@ const CompletedInterviews = () => {
         `/meetings/recruiter/${encodeURIComponent(user.email)}`
       );
 
-      // Filter completed interviews only
       const completed = data.filter((s) => s.completed === true);
 
-      // Sort: recently marked first
+      // Sort: unscored first, then recently completed
       const sorted = completed.sort((a, b) => {
-        if (a.markedAt && b.markedAt) {
-          return new Date(b.markedAt) - new Date(a.markedAt);
-        } else if (a.markedAt) {
-          return -1;
-        } else if (b.markedAt) {
-          return 1;
-        } else {
-          const aEnd = new Date(`${a.date} ${a.time?.split(' - ')[1]}`);
-          const bEnd = new Date(`${b.date} ${b.time?.split(' - ')[1]}`);
-          return bEnd - aEnd;
-        }
+        const aHasScore = a.candidateMarks !== null && a.candidateMarks !== undefined;
+        const bHasScore = b.candidateMarks !== null && b.candidateMarks !== undefined;
+        if (!aHasScore && bHasScore) return -1;
+        if (aHasScore && !bHasScore) return 1;
+        const aMarked = a.markedAt ? new Date(a.markedAt) : 0;
+        const bMarked = b.markedAt ? new Date(b.markedAt) : 0;
+        return bMarked - aMarked;
       });
 
+      // Update stats
+      const scored = completed.filter((s) => s.candidateMarks !== null);
+      const avgScore =
+        scored.length > 0
+          ? (
+              scored.reduce((sum, s) => sum + (s.candidateMarks || 0), 0) / scored.length
+            ).toFixed(1)
+          : 0;
+      const unscored = completed.length - scored.length;
+
+      setStats({ avgScore, total: completed.length, unscored });
       setSchedules(sorted);
     } catch (err) {
-      console.error(err);
-      toast.error('Failed to fetch interviews');
+      toast.error('Failed to fetch completed interviews');
     }
   };
 
@@ -53,48 +64,39 @@ const CompletedInterviews = () => {
     fetchCompletedInterviews();
   }, [user]);
 
-  // Assign score (0–50)
+  // Assign score
   const handleAssignScore = async (scheduleId) => {
     const score = parseFloat(scoreInputs[scheduleId]);
     if (isNaN(score) || score < 0 || score > 50) {
-      toast.error('Please enter a valid score between 0 and 50');
+      toast.error('Enter a valid score between 0 and 50');
       return;
     }
 
     setLoadingScores((prev) => ({ ...prev, [scheduleId]: true }));
 
     try {
-      const response = await axiosInstance.put(`/meetings/${scheduleId}/score`, { score });
-
-      if (response.status === 200) {
-        toast.success('Score assigned successfully!');
-        setScoreInputs((prev) => ({ ...prev, [scheduleId]: '' }));
-        setActiveScoreInput(null);
-        await fetchCompletedInterviews();
-      } else {
-        toast.error('Failed to assign score');
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error('Error while assigning score');
+      await axiosInstance.put(`/meetings/${scheduleId}/score`, { score });
+      toast.success('Score assigned successfully!');
+      setActiveScoreInput(null);
+      fetchCompletedInterviews();
+    } catch {
+      toast.error('Failed to assign score');
     } finally {
       setLoadingScores((prev) => ({ ...prev, [scheduleId]: false }));
     }
   };
 
-  // Open review modal
+  // Review modal
   const openReviewModal = (scheduleId) => {
     setReviewModal({ open: true, scheduleId });
     setReviewText('');
   };
 
-  // Submit review
   const handleSubmitReview = async () => {
     if (!reviewText.trim()) {
       toast.error('Review cannot be empty');
       return;
     }
-
     try {
       await axiosInstance.put(`/meetings/${reviewModal.scheduleId}/review`, {
         review: reviewText,
@@ -102,86 +104,106 @@ const CompletedInterviews = () => {
       toast.success('Review submitted!');
       setReviewModal({ open: false, scheduleId: null });
       fetchCompletedInterviews();
-    } catch (err) {
-      console.error(err);
+    } catch {
       toast.error('Failed to submit review');
     }
   };
 
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
-      <h1 className="text-3xl font-bold text-gray-800 mb-6">Completed Interviews</h1>
+      {/* ==== Header ==== */}
+      <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+        <h1 className="text-3xl font-bold text-gray-900">Completed Interviews</h1>
 
+        {/* Summary Cards */}
+        <div className="flex flex-wrap gap-4">
+          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
+            <p className="text-sm text-gray-500">Average Score</p>
+            <p className="text-2xl font-bold text-blue-600">{stats.avgScore}</p>
+          </div>
+          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
+            <p className="text-sm text-gray-500">Total</p>
+            <p className="text-2xl font-bold text-gray-800">{stats.total}</p>
+          </div>
+          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
+            <p className="text-sm text-gray-500">Unscored</p>
+            <p className="text-2xl font-bold text-red-500">{stats.unscored}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ==== Body ==== */}
       {schedules.length === 0 ? (
-        <p className="text-center text-gray-500 mt-10">No completed interviews found.</p>
+        <p className="text-center text-gray-500 mt-10">
+          No completed interviews found.
+        </p>
       ) : (
-        <div className="space-y-4">
+        <div className="grid gap-4">
           {schedules.map((s) => (
             <div
               key={s.id}
-              className="flex flex-col md:flex-row items-center justify-between bg-white shadow-md rounded-xl p-4 border border-gray-200 hover:shadow-lg transition"
+              className="bg-white p-5 rounded-xl shadow-md border border-gray-200 hover:shadow-lg transition-all flex flex-col md:flex-row justify-between items-center"
             >
-              {/* Candidate Info */}
-              <div className="flex flex-col md:flex-row gap-4 w-full md:w-1/3">
-                <div>
-                  <p className="font-semibold text-gray-800">
-                    {s.candidateName || 'Unnamed Candidate'}
-                  </p>
-                  <p className="text-sm text-gray-500">{s.candidateEmail}</p>
-                </div>
-                {s.candidateResumeUrl && (
+              {/* Left Section */}
+              <div className="flex flex-col gap-2 w-full md:w-1/3">
+                <p className="font-medium text-gray-900">{s.candidateEmail}</p>
+                {s.candidateResumeUrl && s.candidateResumeUrl.trim() !== '' ? (
                   <a
                     href={s.candidateResumeUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 underline text-sm"
+                    className="text-blue-600 underline text-sm font-medium"
                   >
                     View Resume
                   </a>
+                ) : (
+                  <span className="text-gray-500 text-sm italic">
+                    No resume uploaded
+                  </span>
                 )}
               </div>
 
-              {/* Role & Date */}
-              <div className="w-full md:w-1/3 text-center">
-                <p className="text-gray-700 font-medium">{s.role}</p>
+              {/* Middle Section */}
+              <div className="text-center w-full md:w-1/3">
+                <p className="font-semibold text-gray-800">{s.role}</p>
                 <p className="text-gray-500">{`${s.date} | ${s.time}`}</p>
-
                 {s.candidateMarks !== null && (
-                  <>
-                    <p className="text-green-600 font-semibold mt-1">
-                      Score: {s.candidateMarks} / 50
-                    </p>
-                    {s.markedAt && (
-                      <p className="text-xs text-gray-400 mt-1">
-                        Marked on: {new Date(s.markedAt).toLocaleString()}
-                      </p>
-                    )}
-                  </>
+                  <p
+                    className={`mt-1 font-semibold ${
+                      s.candidateMarks >= 40
+                        ? 'text-green-600'
+                        : s.candidateMarks >= 25
+                        ? 'text-yellow-500'
+                        : 'text-red-500'
+                    }`}
+                  >
+                    Score: {s.candidateMarks} / 50
+                  </p>
                 )}
               </div>
 
-              {/* Actions */}
-              <div className="flex gap-2 w-full md:w-1/3 justify-end mt-2 md:mt-0">
+              {/* Right Section */}
+              <div className="flex flex-wrap justify-end gap-2 w-full md:w-1/3 mt-2 md:mt-0">
                 {s.candidateMarks === null && (
                   <>
                     {activeScoreInput === s.id ? (
-                      <div className="flex items-center gap-2">
+                      <div className="flex gap-2 items-center">
                         <input
                           type="number"
                           min="0"
                           max="50"
-                          placeholder="Marks (0-50)"
+                          placeholder="0–50"
+                          className="border border-gray-400 rounded-md px-2 py-1 w-20 focus:ring-2 focus:ring-blue-500 text-gray-800"
                           value={scoreInputs[s.id] || ''}
                           onChange={(e) =>
                             setScoreInputs({ ...scoreInputs, [s.id]: e.target.value })
                           }
-                          className="border px-2 py-1 rounded-md w-28 focus:outline-none focus:ring-2 focus:ring-blue-400 text-gray-800 placeholder-gray-400"
                         />
                         <Button
                           size="small"
                           intent="primary"
-                          disabled={loadingScores[s.id]}
                           onClick={() => handleAssignScore(s.id)}
+                          loading={loadingScores[s.id]}
                         >
                           {loadingScores[s.id] ? 'Saving...' : 'Save'}
                         </Button>
@@ -204,7 +226,6 @@ const CompletedInterviews = () => {
                     )}
                   </>
                 )}
-
                 <Button
                   size="small"
                   intent="secondary"
@@ -220,16 +241,16 @@ const CompletedInterviews = () => {
 
       {/* Review Modal */}
       {reviewModal.open && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
-          <div className="bg-white p-6 rounded-lg w-96 shadow-lg">
-            <h2 className="text-xl font-semibold mb-4">Write Review</h2>
+        <div className="fixed inset-0 flex items-center justify-center bg-black/40 z-50">
+          <div className="bg-white rounded-lg shadow-lg w-96 p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-3">Write Review</h2>
             <textarea
-              className="border w-full p-2 rounded-md h-32 mb-4 text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400"
+              className="w-full border border-gray-400 rounded-md p-2 h-32 text-gray-800 focus:ring-2 focus:ring-blue-500"
+              placeholder="Write your review here..."
               value={reviewText}
               onChange={(e) => setReviewText(e.target.value)}
-              placeholder="Write your review here..."
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end gap-2 mt-3">
               <Button
                 size="small"
                 intent="secondary"

@@ -18,10 +18,15 @@ const JoinMeetingPage = () => {
   const router = useRouter();
   const { user } = useAuth();
 
-  const rolePrefix = user?.role?.toLowerCase() === "recruiter" ? "recruiter" : "candidate";
-  const initialMeetingId = String(params?.meetingId || "");
+  // support either params.meetingId or params.id depending on route naming
+  const initialMeetingId = String(params?.meetingId ?? params?.id ?? "");
 
-  const [name, setName] = useState(user?.username || "");
+  // prefer user.name then fallback to username
+  const initialName = user?.name || user?.username || "";
+
+  const rolePrefix = (user?.role || "").toLowerCase() === "recruiter" ? "recruiter" : "candidate";
+
+  const [name, setName] = useState(initialName);
   const [meetingId, setMeetingId] = useState(initialMeetingId);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -33,23 +38,47 @@ const JoinMeetingPage = () => {
   // 🎥 Local preview only
   useEffect(() => {
     let active = true;
+
     const getMedia = async () => {
       try {
+        // request both audio & video for preview (user gesture not required for preview in many browsers,
+        // but will prompt permission if not previously granted)
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        if (!active) return;
+        if (!active) {
+          // if component unmounted, stop tracks immediately
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          // ensure muted (preview) and autoplay playsInline
+          videoRef.current.muted = true;
+          videoRef.current.playsInline = true;
+          videoRef.current.play().catch(() => {});
+        }
       } catch (err) {
         console.error("❌ Cannot access camera/mic:", err);
+        // disable toggles on failure
         setMicOn(false);
         setCamOn(false);
       }
     };
+
     getMedia();
 
     const stopTracks = () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      try {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        if (videoRef.current) {
+          try { videoRef.current.srcObject = null; } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('stopTracks failed', e);
+      }
     };
+
     const handleUnload = () => stopTracks();
     window.addEventListener("pagehide", handleUnload);
     window.addEventListener("beforeunload", handleUnload);
@@ -65,13 +94,21 @@ const JoinMeetingPage = () => {
   const toggleMic = () => {
     const next = !micOn;
     setMicOn(next);
-    streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = next));
+    try {
+      streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = next));
+    } catch (e) {
+      console.warn('toggleMic failed', e);
+    }
   };
 
   const toggleCam = () => {
     const next = !camOn;
     setCamOn(next);
-    streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
+    try {
+      streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
+    } catch (e) {
+      console.warn('toggleCam failed', e);
+    }
   };
 
   // 🚀 Proceed to meeting room
@@ -83,14 +120,26 @@ const JoinMeetingPage = () => {
     setLoadingJoin(true);
 
     try {
+      // store prejoin for MeetingRoom to consume
       sessionStorage.setItem(
         "prejoin",
         JSON.stringify({ name, meetingId, micOn, camOn, role: rolePrefix })
       );
 
-      // stop preview tracks
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      router.push(`/meetingRoom/${meetingId}`);
+      // stop preview tracks (we don't want them running while the SDK takes over)
+      try {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        if (videoRef.current) {
+          try { videoRef.current.srcObject = null; } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('failed to stop preview tracks on join', e);
+      }
+
+      // navigate to MeetingRoom — IMPORTANT: route must match your MeetingRoom component route
+      // your MeetingRoom code expects param name `meetingId` and route `/meeting/[meetingId]`
+      router.push(`/meetingRoom/${initialMeetingId}`);
     } catch (err) {
       console.error("Join error:", err);
       alert("Error starting meeting.");
@@ -102,7 +151,13 @@ const JoinMeetingPage = () => {
   const handleClose = () => {
     try {
       streamRef.current?.getTracks().forEach((track) => track.stop());
-    } catch {}
+      streamRef.current = null;
+      if (videoRef.current) {
+        try { videoRef.current.srcObject = null; } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('handleClose cleanup failed', e);
+    }
     router.push("/");
   };
 
@@ -112,7 +167,8 @@ const JoinMeetingPage = () => {
     return (
       <button
         onClick={onClick}
-        className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-colors border ${colorClass} bg-transparent hover:bg-gray-700/50`}
+        className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-colors border ${colorClass} bg-transparent hover:bg-gray-700/50 cursor-pointer`}
+        aria-pressed={!!active}
       >
         <Icon className="w-5 h-5" />
         <span>{label}</span>

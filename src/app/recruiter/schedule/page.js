@@ -9,9 +9,8 @@ import { useAuth } from '@/context/AuthProvider';
 import { useRouter } from 'next/navigation';
 import { usePreJoin } from '@/context/PreJoinContext';
 
-
 const RecruiterSchedule = () => {
-  const router=useRouter()
+  const router = useRouter();
   const [schedules, setSchedules] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
@@ -19,9 +18,9 @@ const RecruiterSchedule = () => {
   const [newTime, setNewTime] = useState('');
   const [filter, setFilter] = useState('All');
   const [selectedDate, setSelectedDate] = useState('');
-  const [loadingIds, setLoadingIds] = useState([]); // for Mark Completed
+  const [loadingIds, setLoadingIds] = useState([]);
   const [updating, setUpdating] = useState(false);
-  const {setSelectedMeeting}=usePreJoin() // for Update Timing
+  const { setSelectedMeeting } = usePreJoin();
 
   const today = new Date().toISOString().split('T')[0];
   const now = new Date();
@@ -31,7 +30,9 @@ const RecruiterSchedule = () => {
     const fetchMeetings = async () => {
       if (!user?.email) return;
       try {
-        const res = await axiosInstance.get(`/meetings/recruiter/${encodeURIComponent(user.email)}`);
+        const res = await axiosInstance.get(
+          `/meetings/recruiter/${encodeURIComponent(user.email)}`
+        );
         setSchedules(res.data.filter((s) => !s.completed));
       } catch (err) {
         toast.error('Failed to fetch meetings');
@@ -83,32 +84,24 @@ const RecruiterSchedule = () => {
   };
 
   const canJoin = (schedule) => {
-    // const scheduleTime = new Date(`${schedule.date} ${schedule.time}`);
-    // const tenMinBefore = new Date(scheduleTime.getTime() - 10 * 60 * 1000);
-    // const tenMinAfter = new Date(scheduleTime.getTime() + 10 * 60 * 1000);
-    // return now >= tenMinBefore && now <= tenMinAfter;
     return true;
   };
 
   const handleJoin = (schedule) => {
-    // if (!canJoin(schedule)) {
-    //   toast.error('You can only join 10 minutes before or after the start time');
-    //   return;
-    // }
     toast.success(`Joining meeting for ${schedule.candidateEmail}`);
-    setSelectedMeeting(schedule.id)
-    router.push(`/meeting/${schedule.id}`)
+    setSelectedMeeting(schedule.id);
+    router.push(`/meeting/${schedule.id}`);
   };
 
   const handleMarkCompleted = async (schedule) => {
-    setLoadingIds((prev) => [...prev, schedule.id]); // show loading immediately
-    setSchedules((prev) => prev.filter((s) => s.id !== schedule.id)); // optimistic remove
+    setLoadingIds((prev) => [...prev, schedule.id]);
+    setSchedules((prev) => prev.filter((s) => s.id !== schedule.id));
 
     try {
       await axiosInstance.put(`/meetings/${schedule.id}/complete`, { completed: true });
       toast.success('Marked as completed!');
     } catch {
-      setSchedules((prev) => [...prev, schedule]); // rollback
+      setSchedules((prev) => [...prev, schedule]);
       toast.error('Failed to mark as completed');
     } finally {
       setLoadingIds((prev) => prev.filter((id) => id !== schedule.id));
@@ -133,17 +126,20 @@ const RecruiterSchedule = () => {
               {f}
             </Button>
           ))}
+          {/* ✅ Cleaned Date Filter Input */}
           <input
             type="date"
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
-            className="border-2 border-gray-400 px-3 py-2 rounded-md" // thicker border
+            className="border-2 border-gray-400 bg-white px-3 py-2 rounded-md text-gray-700 focus:outline-none focus:border-blue-500"
           />
         </div>
       </div>
 
       {filteredSchedules.length === 0 && (
-        <p className="text-center text-gray-500 mt-10">No pending interviews found.</p>
+        <p className="text-center text-gray-500 mt-10">
+          No pending interviews found.
+        </p>
       )}
 
       <div className="space-y-4">
@@ -154,14 +150,20 @@ const RecruiterSchedule = () => {
           >
             <div className="flex flex-col md:flex-row gap-4 w-full md:w-1/3">
               <p className="text-sm font-medium text-gray-800">{s.candidateEmail}</p>
-              <a
-                href={s.resume}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 underline text-sm font-medium"
-              >
-                View Resume
-              </a>
+              {s.resume && s.resume.trim() !== '' ? (
+                <a
+                  href={s.resume}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 underline text-sm font-medium"
+                >
+                  View Resume
+                </a>
+              ) : (
+                <span className="text-gray-500 text-sm italic">
+                  No resume uploaded
+                </span>
+              )}
             </div>
 
             <div className="w-full md:w-1/3 text-center">
@@ -179,15 +181,22 @@ const RecruiterSchedule = () => {
                 Join
               </Button>
 
-              <Button intent="accent" size="small" onClick={() => openUpdateModal(s)} loading={updating && selectedSchedule?.id === s.id}>
+              <Button
+                intent="accent"
+                size="small"
+                onClick={() => openUpdateModal(s)}
+                loading={updating && selectedSchedule?.id === s.id}
+              >
                 Update Timing
               </Button>
 
+              {/* ✅ Fix: Make "Mark Completed" text clearly visible */}
               <Button
                 intent="success"
                 size="small"
                 onClick={() => handleMarkCompleted(s)}
                 loading={loadingIds.includes(s.id)}
+                className="!text-white !bg-green-600 hover:!bg-green-700"
               >
                 Mark Completed
               </Button>
@@ -217,7 +226,12 @@ const RecruiterSchedule = () => {
                 className="w-full border-2 border-gray-400 px-3 py-2 rounded-md"
               />
             </div>
-            <Button size="medium" intent="primary" onClick={handleUpdateTiming} loading={updating}>
+            <Button
+              size="medium"
+              intent="primary"
+              onClick={handleUpdateTiming}
+              loading={updating}
+            >
               Update
             </Button>
           </div>
