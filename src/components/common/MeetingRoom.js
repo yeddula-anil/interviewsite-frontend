@@ -25,7 +25,7 @@ import {
   useCallStateHooks,
   ParticipantView,
 } from '@stream-io/video-react-sdk';
-import { initStreamCall } from '@/utils/streamHelper';
+import { initStreamCall } from '@/utils/StreamHelper';
 
 const Editor = lazy(() => import('@monaco-editor/react'));
 
