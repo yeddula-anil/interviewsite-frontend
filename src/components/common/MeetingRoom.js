@@ -25,6 +25,7 @@ import {
   useCallStateHooks,
   ParticipantView,
 } from '@stream-io/video-react-sdk';
+import { initStreamCall } from '@/utils/streamHelper';
 
 const Editor = lazy(() => import('@monaco-editor/react'));
 
@@ -51,7 +52,7 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
   const { microphone } = micState;
   const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
 
-  // ✅ detect remote participant correctly
+  // Detect remote participant
   const otherParticipants = participants.filter((p) => !p.isLocalParticipant);
   const remoteParticipant = otherParticipants.length ? otherParticipants[0] : null;
 
@@ -59,7 +60,7 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
   const localVideoRef = useRef(null);
   const [fallbackPreviewVisible, setFallbackPreviewVisible] = useState(false);
 
-  // Chat + editor
+  // Chat + editor state
   const [chatMessages, setChatMessages] = useState([{ id: 1, sender: 'System', text: 'Welcome!' }]);
   const [chatInput, setChatInput] = useState('');
   const [code, setCode] = useState('// Start coding here...\n');
@@ -91,7 +92,6 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
     }
   };
 
-  // ✅ Fixed toggles (republishes if needed)
   const handleMicToggle = async () => {
     try {
       if (microphone?.isEnabled) {
@@ -120,7 +120,6 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
     }
   };
 
-  // ✅ Reliable screen sharing
   const handleScreenShareToggle = async () => {
     try {
       if (screenShare?.isEnabled) {
@@ -134,7 +133,7 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
     }
   };
 
-  // ✅ Local fallback preview if SDK doesn’t attach video immediately
+  // Local fallback video
   useEffect(() => {
     let fallbackStream = null;
     let interval = null;
@@ -154,7 +153,7 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
           return true;
         }
         return false;
-      } catch (err) {
+      } catch {
         return false;
       }
     };
@@ -189,7 +188,6 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
     };
   }, [localParticipant]);
 
-  // ✅ Recording (best effort)
   const startLocalRecording = async () => {
     try {
       const merged = new MediaStream();
@@ -239,21 +237,32 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
     }
   };
 
-  // --- UI ---
+  // === UI ===
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col">
       <div className="flex-1 flex gap-3 overflow-hidden rounded-lg border border-gray-700 p-2">
         {/* === Code Editor === */}
         {editorOpen && (
-          <div className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}>
+          <div
+            className={`${editorMaximized ? 'w-full' : 'w-1/3'} bg-gray-800 border border-gray-700 flex flex-col transition-all duration-300`}
+          >
             <div className="p-2 bg-gray-700 flex items-center justify-between text-sm font-medium">
               <span>Code Editor</span>
-              <button onClick={() => setEditorMaximized((p) => !p)} className="p-1 rounded hover:bg-gray-600 cursor-pointer">
+              <button
+                onClick={() => setEditorMaximized((p) => !p)}
+                className="p-1 rounded hover:bg-gray-600 cursor-pointer"
+              >
                 {editorMaximized ? <FaCompress /> : <FaExpand />}
               </button>
             </div>
             <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
-              <Editor height="100%" theme="vs-dark" value={code} onChange={(c) => setCode(c ?? code)} options={{ fontSize: 14, minimap: { enabled: false } }} />
+              <Editor
+                height="100%"
+                theme="vs-dark"
+                value={code}
+                onChange={(c) => setCode(c ?? code)}
+                options={{ fontSize: 14, minimap: { enabled: false } }}
+              />
             </Suspense>
           </div>
         )}
@@ -261,8 +270,7 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
         {/* === Video Section === */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700 overflow-hidden">
-            {/* ✅ Waiting Overlay */}
-           {(!remoteParticipant || (!remoteParticipant.videoTrack && !remoteParticipant.audioTrack)) && (
+            {(!remoteParticipant || (!remoteParticipant.videoTrack && !remoteParticipant.audioTrack)) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm text-gray-300 z-[10]">
                 <div className="flex flex-col items-center space-y-4">
                   <div className="animate-pulse text-xl font-medium">
@@ -275,8 +283,6 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
                 </div>
               </div>
             )}
-
-
 
             <div className="w-full h-full relative">
               {remoteParticipant ? (
@@ -327,7 +333,13 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {chatMessages.map((msg) => (
                 <div key={msg.id} className={`flex ${msg.sender === username ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`p-2 rounded-lg max-w-[75%] ${msg.sender === username ? 'bg-teal-700 text-white rounded-br-none' : 'bg-gray-700 text-gray-100 rounded-bl-none'}`}>
+                  <div
+                    className={`p-2 rounded-lg max-w-[75%] ${
+                      msg.sender === username
+                        ? 'bg-teal-700 text-white rounded-br-none'
+                        : 'bg-gray-700 text-gray-100 rounded-bl-none'
+                    }`}
+                  >
                     <div className="text-xs text-gray-300 font-medium mb-1">{msg.sender}</div>
                     <div className="text-sm">{msg.text}</div>
                   </div>
@@ -343,7 +355,10 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
                 placeholder="Type a message..."
                 className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
               />
-              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700 cursor-pointer">
+              <button
+                onClick={sendChat}
+                className="ml-2 p-2 bg-teal-600 rounded hover:bg-teal-700 cursor-pointer"
+              >
                 <FaPaperPlane />
               </button>
             </div>
@@ -353,44 +368,76 @@ const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
 
       {/* === Bottom Controls === */}
       <div className="flex justify-between items-center mt-4">
-        <button onClick={() => setEditorOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer">
+        <button
+          onClick={() => setEditorOpen((p) => !p)}
+          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer"
+        >
           <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
 
         <div className="flex justify-center gap-4 items-center">
           {/* Mic */}
-          <button onClick={handleMicToggle} className={`p-3 rounded-full border ${microphone?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'} cursor-pointer`}>
+          <button
+            onClick={handleMicToggle}
+            className={`p-3 rounded-full border ${
+              microphone?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
+            } cursor-pointer`}
+          >
             {microphone?.isEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
           </button>
 
           {/* Camera */}
-          <button onClick={handleCameraToggle} className={`p-3 rounded-full border ${camera?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'} cursor-pointer`}>
+          <button
+            onClick={handleCameraToggle}
+            className={`p-3 rounded-full border ${
+              camera?.isEnabled ? 'border-teal-400 text-teal-400' : 'border-red-500 text-red-500'
+            } cursor-pointer`}
+          >
             {camera?.isEnabled ? <FaVideo /> : <FaVideoSlash />}
           </button>
 
           {/* Screen share */}
-          <button onClick={handleScreenShareToggle} className={`p-3 rounded-full border ${screenShare?.isEnabled ? 'border-teal-400 text-teal-400 bg-teal-900/30' : 'border-gray-400 text-gray-400'} cursor-pointer`}>
+          <button
+            onClick={handleScreenShareToggle}
+            className={`p-3 rounded-full border ${
+              screenShare?.isEnabled ? 'border-teal-400 text-teal-400 bg-teal-900/30' : 'border-gray-400 text-gray-400'
+            } cursor-pointer`}
+          >
             <FaDesktop />
           </button>
 
           {/* Recording */}
-          <button onClick={() => (recording ? stopLocalRecording() : startLocalRecording())} className={`p-3 rounded-full border ${recording ? 'border-teal-400 text-teal-400' : 'border-gray-600 text-gray-600'} cursor-pointer`}>
+          <button
+            onClick={() => (recording ? stopLocalRecording() : startLocalRecording())}
+            className={`p-3 rounded-full border ${
+              recording ? 'border-teal-400 text-teal-400' : 'border-gray-600 text-gray-600'
+            } cursor-pointer`}
+          >
             <FaRegCircle />
           </button>
 
           {/* Auto Scoring */}
-          <button onClick={() => setAutoScoring((v) => !v)} className="p-2 rounded text-sm bg-gray-800 hover:bg-gray-700 flex items-center gap-2 cursor-pointer">
+          <button
+            onClick={() => setAutoScoring((v) => !v)}
+            className="p-2 rounded text-sm bg-gray-800 hover:bg-gray-700 flex items-center gap-2 cursor-pointer"
+          >
             {autoScoring ? <FaToggleOn className="text-teal-400" /> : <FaToggleOff className="text-gray-400" />}
             <span className="text-xs">{autoScoring ? 'Auto Scoring ON' : 'Auto Scoring OFF'}</span>
           </button>
 
           {/* Leave */}
-          <button onClick={leaveMeeting} className="p-3 rounded-full bg-red-600 hover:bg-red-700 cursor-pointer">
+          <button
+            onClick={leaveMeeting}
+            className="p-3 rounded-full bg-red-600 hover:bg-red-700 cursor-pointer"
+          >
             <FaPhoneSlash />
           </button>
         </div>
 
-        <button onClick={() => setChatOpen((p) => !p)} className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer">
+        <button
+          onClick={() => setChatOpen((p) => !p)}
+          className="bg-gray-800 hover:bg-gray-700 text-sm px-3 py-2 rounded flex items-center gap-2 cursor-pointer"
+        >
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>
@@ -414,32 +461,9 @@ const MeetingRoom = () => {
       return;
     }
 
-    const username = `${prejoin.role || 'candidate'}-${prejoin.name || 'Guest'}`;
-
     (async () => {
       try {
-        const res = await fetch('/api/stream/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: username }),
-        });
-        const { token } = await res.json();
-
-        const clientInstance = StreamVideoClient.getOrCreateInstance({
-          apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
-          user: { id: username, name: prejoin.name },
-          token,
-        });
-
-        const callInstance = clientInstance.call('default', prejoin.meetingId);
-        await callInstance.join({ create: true });
-
-        // ensure tracks ready
-        await callInstance.camera.createTrack?.().catch(() => {});
-        await callInstance.microphone.createTrack?.().catch(() => {});
-
-        if (prejoin.camOn !== false) await callInstance.camera.enable().catch(() => {});
-        if (prejoin.micOn !== false) await callInstance.microphone.enable().catch(() => {});
+        const { clientInstance, callInstance } = await initStreamCall(prejoin);
 
         if (mounted) {
           setClient(clientInstance);
@@ -460,13 +484,19 @@ const MeetingRoom = () => {
   }, [meetingId, router]);
 
   if (isConnecting) {
-    return <div className="flex items-center justify-center min-h-screen text-gray-400 text-lg">Connecting to meeting...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen text-gray-400 text-lg">
+        Connecting to meeting...
+      </div>
+    );
   }
+
+  const username = JSON.parse(sessionStorage.getItem('prejoin'))?.name || 'Guest';
 
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
-        <CallUI call={call} username={JSON.parse(sessionStorage.getItem('prejoin'))?.name || 'Guest'} autoScoring={autoScoring} setAutoScoring={setAutoScoring} />
+        <CallUI call={call} username={username} autoScoring={autoScoring} setAutoScoring={setAutoScoring} />
       </StreamCall>
     </StreamVideo>
   );
