@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, lazy, Suspense } from 'react';
+import React, { useEffect, useState, lazy, Suspense, useRef } from 'react';
 import {
   FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
   FaDesktop, FaPhoneSlash, FaComments, FaCode,
@@ -58,7 +58,7 @@ const CallUI = ({ call, username }) => {
     window.location.href = '/';
   };
 
-  // 👥 Determine remote participant
+  // 👥 Remote participant
   const remoteParticipant = participants.find((p) => !p.isLocalParticipant) || null;
 
   return (
@@ -89,13 +89,11 @@ const CallUI = ({ call, username }) => {
         {/* === Video Section === */}
         {!editorMaximized && (
           <div className="relative bg-black flex-1 flex flex-col items-center justify-center rounded-lg border border-gray-700">
-            {/* Waiting text */}
             {!remoteParticipant && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60 text-gray-300 text-lg">
                 Waiting for the other participant to join...
               </div>
             )}
-            {/* remote video ui  */}
             <div className="w-full h-full rounded-lg">
               {remoteParticipant ? (
                 <ParticipantView participant={remoteParticipant} />
@@ -106,8 +104,7 @@ const CallUI = ({ call, username }) => {
               )}
             </div>
 
-
-            {/* Local PIP */}
+            {/* Local participant (bottom corner) */}
             <div className="absolute right-4 bottom-4 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900">
               {localParticipant && <ParticipantView participant={localParticipant} />}
             </div>
@@ -204,19 +201,20 @@ const CallUI = ({ call, username }) => {
 const MeetingRoom = () => {
   const { meetingId } = useParams();
   const router = useRouter();
-  const { user, loading } = useAuth();
-
-  const authName = user?.username || user?.name || 'Guest';
-  const rolePrefix = user?.role === 'recruiter' ? 'recruiter' : 'candidate';
-  const username = `${rolePrefix}-${authName}`;
 
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
   const [isConnecting, setIsConnecting] = useState(true);
 
   useEffect(() => {
-    if (loading || !meetingId) return;
     let mounted = true;
+    const prejoin = JSON.parse(sessionStorage.getItem('prejoin') || '{}');
+    if (!prejoin?.meetingId) {
+      router.push('/');
+      return;
+    }
+
+    const username = `${prejoin.role || 'candidate'}-${prejoin.name || 'Guest'}`;
 
     (async () => {
       try {
@@ -229,20 +227,14 @@ const MeetingRoom = () => {
 
         const clientInstance = StreamVideoClient.getOrCreateInstance({
           apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
-          user: { id: username, name: authName },
+          user: { id: username, name: prejoin.name },
           token,
         });
 
-        const callInstance = clientInstance.call('default', String(meetingId));
+        const callInstance = clientInstance.call('default', prejoin.meetingId);
+        await callInstance.join({ create: true });
 
-        // 🧠 Safe join logic
-        try {
-          await callInstance.join();
-        } catch {
-          await callInstance.join({ create: true });
-        }
-
-        // ✅ Limit to two participants
+        // ✅ Limit to 2 participants
         const members = await callInstance.queryMembers({});
         if (members.members.length > 2) {
           alert('This interview room is full.');
@@ -257,30 +249,38 @@ const MeetingRoom = () => {
         setClient(clientInstance);
         setCall(callInstance);
         setIsConnecting(false);
+
+        // Apply mic/cam state
+        if (!prejoin.micOn) callInstance.microphone.disable();
+        if (!prejoin.camOn) callInstance.camera.disable();
       } catch (err) {
         console.error('❌ Stream init error:', err);
         setIsConnecting(false);
       }
     })();
 
-    // ✅ Cleanup on unmount or navigation
+    // ✅ Auto disconnect on close or tab change
     const cleanup = async () => {
-      if (call) await call.leave();
-      if (client) await client.disconnectUser();
+      try {
+        await call?.leave();
+      } catch {}
+      try {
+        await client?.disconnectUser();
+      } catch {}
     };
 
     window.addEventListener('beforeunload', cleanup);
-    router.events?.on('routeChangeStart', cleanup);
+    window.addEventListener('pagehide', cleanup);
 
     return () => {
       mounted = false;
       cleanup();
       window.removeEventListener('beforeunload', cleanup);
-      router.events?.off('routeChangeStart', cleanup);
+      window.removeEventListener('pagehide', cleanup);
     };
-  }, [meetingId, username, loading]);
+  }, [meetingId]);
 
-  if (loading || isConnecting) {
+  if (isConnecting) {
     return (
       <div className="flex items-center justify-center min-h-screen text-gray-400 text-lg">
         Connecting to meeting...
@@ -291,7 +291,7 @@ const MeetingRoom = () => {
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
-        <CallUI call={call} username={username} />
+        <CallUI call={call} username={client?.user?.name || 'Guest'} />
       </StreamCall>
     </StreamVideo>
   );

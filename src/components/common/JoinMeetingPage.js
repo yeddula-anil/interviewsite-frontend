@@ -4,7 +4,6 @@ import { useParams, useRouter } from "next/navigation";
 import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash } from 'react-icons/fa';
 import { IoMdClose } from 'react-icons/io';
 import { Button } from "@/components/common/Button";
-import { StreamVideoClient } from '@stream-io/video-react-sdk';
 import { useAuth } from "@/context/AuthProvider";
 
 const MEETING_INFO = {
@@ -19,22 +18,19 @@ const JoinMeetingPage = () => {
   const router = useRouter();
   const { user } = useAuth();
 
-  const rolePrefix = user?.role === "RECRUITER" ? "RECRUITER" : "CANDIDATE";
+  const rolePrefix = user?.role?.toLowerCase() === "recruiter" ? "recruiter" : "candidate";
   const initialMeetingId = String(params?.meetingId || "");
 
   const [name, setName] = useState(user?.username || "");
   const [meetingId, setMeetingId] = useState(initialMeetingId);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
-  const [participants, setParticipants] = useState([]);
-  const [checkingParticipants, setCheckingParticipants] = useState(false);
   const [loadingJoin, setLoadingJoin] = useState(false);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const tempClientRef = useRef(null);
 
-  // 🎥 Local preview
+  // 🎥 Local preview only
   useEffect(() => {
     let active = true;
     const getMedia = async () => {
@@ -54,7 +50,6 @@ const JoinMeetingPage = () => {
     const stopTracks = () => {
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-
     const handleUnload = () => stopTracks();
     window.addEventListener("pagehide", handleUnload);
     window.addEventListener("beforeunload", handleUnload);
@@ -79,45 +74,7 @@ const JoinMeetingPage = () => {
     streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
   };
 
-  // 👥 Peek current participants
-  const checkParticipants = async () => {
-    if (!meetingId) return;
-    setCheckingParticipants(true);
-    let tempClient;
-    try {
-      const res = await fetch("/api/stream/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: `${rolePrefix}-${name || "Guest"}` }),
-      });
-      const { token } = await res.json();
-
-      tempClient = new StreamVideoClient({
-        apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
-        user: { id: `${rolePrefix}-${name || "Guest"}`, name: name || "Guest" },
-        token,
-      });
-      tempClientRef.current = tempClient;
-
-      const call = tempClient.call("default", meetingId);
-      await call.join({ create: true });
-
-      const members = await call.queryMembers({});
-      setParticipants(members.members.map((m) => m.user.id));
-
-      await call.leave();
-    } catch (err) {
-      console.error("Error checking participants:", err);
-    } finally {
-      setCheckingParticipants(false);
-      try {
-        await tempClient?.disconnectUser();
-      } catch {}
-      tempClientRef.current = null;
-    }
-  };
-
-  // 🚀 Join Meeting
+  // 🚀 Proceed to meeting room
   const handleJoin = async () => {
     if (!name || !meetingId) {
       alert("Please enter your name and meeting ID.");
@@ -126,43 +83,17 @@ const JoinMeetingPage = () => {
     setLoadingJoin(true);
 
     try {
-      // ✅ Check participant limit before joining
-      const res = await fetch("/api/stream/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: `${rolePrefix}-${name}` }),
-      });
-      const { token } = await res.json();
-
-      const tempClient = new StreamVideoClient({
-        apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
-        user: { id: `${rolePrefix}-${name}`, name },
-        token,
-      });
-      const call = tempClient.call("default", meetingId);
-      await call.join({ create: true });
-
-      const members = await call.queryMembers({});
-      if (members.members.length >= 2) {
-        alert("This interview room is already full.");
-        await call.leave();
-        await tempClient.disconnectUser();
-        return;
-      }
-
-      // ✅ Store prejoin info for MeetingRoom
       sessionStorage.setItem(
         "prejoin",
-        JSON.stringify({ name, meetingId, micOn, camOn })
+        JSON.stringify({ name, meetingId, micOn, camOn, role: rolePrefix })
       );
 
-      await call.leave();
-      await tempClient.disconnectUser();
-
+      // stop preview tracks
+      streamRef.current?.getTracks().forEach((track) => track.stop());
       router.push(`/meetingRoom/${meetingId}`);
     } catch (err) {
       console.error("Join error:", err);
-      alert("Unable to join meeting. Please try again.");
+      alert("Error starting meeting.");
     } finally {
       setLoadingJoin(false);
     }
@@ -174,23 +105,6 @@ const JoinMeetingPage = () => {
     } catch {}
     router.push("/");
   };
-
-  // 🧹 Cleanup if navigating away mid-check
-  useEffect(() => {
-    const cleanup = async () => {
-      try {
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        await tempClientRef.current?.disconnectUser();
-      } catch {}
-    };
-    window.addEventListener("pagehide", cleanup);
-    window.addEventListener("beforeunload", cleanup);
-    return () => {
-      cleanup();
-      window.removeEventListener("pagehide", cleanup);
-      window.removeEventListener("beforeunload", cleanup);
-    };
-  }, []);
 
   const ControlButton = ({ active, onClick, activeIcon: ActiveIcon, inactiveIcon: InactiveIcon, label }) => {
     const Icon = active ? ActiveIcon : InactiveIcon;
@@ -236,13 +150,6 @@ const JoinMeetingPage = () => {
               placeholder="Enter Meeting ID"
               className="w-full px-3 py-2 rounded-md bg-gray-700 border border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
             />
-            <button
-              onClick={checkParticipants}
-              className="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded-md text-sm w-fit"
-              disabled={checkingParticipants}
-            >
-              {checkingParticipants ? "Checking..." : "Check Participants"}
-            </button>
 
             <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-700">
               <video
@@ -290,26 +197,14 @@ const JoinMeetingPage = () => {
             </div>
           </div>
 
-          {/* Participants */}
+          {/* Info Section */}
           <div className="lg:w-1/4 pt-2">
-            <h3 className="text-lg font-medium mb-3 text-gray-300">Other Participants</h3>
-            {participants.length === 0 ? (
-              <p className="text-gray-500 text-sm">No one has joined yet.</p>
-            ) : (
-              participants.map((p) => (
-                <div key={p} className="flex items-center space-x-3 p-3 rounded-lg bg-gray-700/50 mb-2">
-                  <img
-                    src={`https://api.dicebear.com/7.x/thumbs/svg?seed=${p}`}
-                    alt={p}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
-                  <div>
-                    <p className="font-medium text-sm">{p}</p>
-                    <p className="text-xs text-gray-400">Participant</p>
-                  </div>
-                </div>
-              ))
-            )}
+            <h3 className="text-lg font-medium mb-3 text-gray-300">Interview Details</h3>
+            <div className="text-sm text-gray-400 space-y-2">
+              <p>Job Title: {MEETING_INFO.jobTitle}</p>
+              <p>Team: {MEETING_INFO.team}</p>
+              <p>Recruiter: {MEETING_INFO.interviewer}</p>
+            </div>
           </div>
         </div>
       </div>
