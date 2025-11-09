@@ -1,0 +1,25 @@
+/* === STREAM SDK OVERRIDE FIX === */
+
+/* Contain the StreamVideo component inside its parent */
+div[class*="stream-video"],
+div[class*="stream-call"] {
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+  overflow: hidden !important;
+}
+
+/* Prevent Stream's ParticipantView from escaping */
+div[class*="stream-participant-view"] {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
+/* Optional – keep chat/editor visible above video layers */
+div[class*="stream-video"] {
+  z-index: 1 !important;
+}
