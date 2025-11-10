@@ -59,19 +59,28 @@ const CallUI = ({ call, username, isRecruiter, autoScoring, setAutoScoring, room
   const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
 
 // ✅ Detect remote participants more reliably
-  const otherParticipants = participants.filter(
-    (p) => !p.isLocalParticipant && ['joining', 'joined', 'connected'].includes(p.state)
+  const otherParticipant = participants.filter(
+    (p) => !p.isLocal
   );
   const remoteParticipant = otherParticipants.length ? otherParticipants[0] : null;
 
   // 🧠 Debug: Log all participants & states
   useEffect(() => {
-    console.log("👥 Participants:", participants.map(p => ({
-      id: p.user?.id,
-      state: p.state,
-      isLocal: p.isLocalParticipant,
-    })));
+  const timeout = setTimeout(() => {
+      console.log(
+        "👥 Participants:",
+        participants.map((p) => ({
+          id: p.user?.id || "N/A",
+          name: p.user?.name || "Unknown",
+          state: p.state,
+          isLocal: p.isLocalParticipant,
+        }))
+      );
+    }, 1500); // wait for Stream to sync participants after join
+
+    return () => clearTimeout(timeout);
   }, [participants]);
+
 
 
   const localVideoRef = useRef(null);
@@ -446,9 +455,24 @@ const MeetingRoom = () => {
         clientInstance = c;
         callInstance = callObj;
 
+        // ✅ Wait until client WebSocket is ready before showing UI
+        // if (!c.wsConnectionHealthy) {
+        //   console.log("⏳ Waiting for Stream client WebSocket connection...");
+        //   await new Promise((resolve) => {
+        //     const check = setInterval(() => {
+        //       if (c.wsConnectionHealthy) {
+        //         clearInterval(check);
+        //         resolve();
+        //       }
+        //     }, 400);
+        //   });
+        //   console.log("✅ Stream WebSocket connection ready!");
+        // }
+
         setClient(c);
         setCall(callObj);
         setIsConnecting(false);
+
 
         // ✅ Register beforeunload (browser close/reload)
         const handleUnload = async () => {
@@ -506,8 +530,11 @@ const MeetingRoom = () => {
   }
 
   const prejoin = JSON.parse(sessionStorage.getItem('prejoin')) || {};
-  const username = prejoin?.name || 'Guest';
-  const isRecruiter = prejoin?.role.toLowerCase() === 'recruiter';
+  const safeName = (prejoin.name || 'guest').toLowerCase().replace(/\s+/g, '-');
+  const role = (prejoin.role || 'participant').toLowerCase();
+  const username = `${role}-${safeName}`;
+  const isRecruiter = role === 'recruiter';
+
 
   return (
     <StreamVideo client={client}>
