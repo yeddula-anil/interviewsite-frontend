@@ -59,7 +59,7 @@ const CallUI = ({ call, username, isRecruiter, autoScoring, setAutoScoring, room
   const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
 
 // ✅ Detect remote participants more reliably
-  const otherParticipant = participants.filter(
+  const otherParticipants= participants.filter(
     (p) => !p.isLocal
   );
   const remoteParticipant = otherParticipants.length ? otherParticipants[0] : null;
