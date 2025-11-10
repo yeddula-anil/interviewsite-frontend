@@ -15,6 +15,7 @@ export async function initStreamCall(prejoin) {
   const safeName = slugify(prejoin.name || 'guest');
   const role = slugify(prejoin.role || 'participant').toLowerCase();
   const username = `${role}-${safeName}`;
+  console.log(username)
 
   console.log(`🎯 Attempting to join call as: ${username}`);
 

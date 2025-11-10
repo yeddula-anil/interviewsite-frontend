@@ -1,51 +1,37 @@
-import { NextResponse } from 'next/server';
-import { StreamClient } from '@stream-io/node-sdk';
+import { NextResponse } from "next/server";
+import jwt from "jsonwebtoken";
 
-// ✅ Use Mumbai region (ap-south)
-export const runtime = 'nodejs';
-export const preferredRegion = 'bom1';
-
-const STREAM_API_KEY = process.env.STREAM_API_KEY;
-const STREAM_API_SECRET = process.env.STREAM_API_SECRET;
-
-let client = null;
-
-// ✅ Initialize Stream client safely
-function ensureClient() {
-  if (!STREAM_API_KEY || !STREAM_API_SECRET) {
-    throw new Error('Missing STREAM_API_KEY or STREAM_API_SECRET environment variables.');
-  }
-
-  if (!client) {
-    client = new StreamClient(STREAM_API_KEY, STREAM_API_SECRET, { video: true });
-    console.log('✅ Stream client initialized (video enabled)');
-  }
-
-  return client;
-}
-
-// ✅ Handle both GET & POST but always via query param
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
-    const user_id = searchParams.get('user_id');
+    const user_id = searchParams.get("user_id");
 
     if (!user_id) {
-      return NextResponse.json({ error: 'user_id is required' }, { status: 400 });
+      return NextResponse.json({ error: "Missing user_id" }, { status: 400 });
     }
 
-    const stream = ensureClient();
-    const token = stream.createToken(user_id);
-    console.log(`🎯 Token created for user: ${user_id}`);
+    const cleanUserId = user_id.trim(); // ✅ Removes spaces/newlines
+    console.log("🎫 Generating Stream token for user:", cleanUserId);
 
-    return NextResponse.json({ token }, { status: 200 });
+    const apiKey = process.env.NEXT_PUBLIC_STREAM_API_KEY;
+    const apiSecret = process.env.STREAM_API_SECRET;
+
+    if (!apiKey || !apiSecret) {
+      throw new Error("Missing Stream credentials in environment variables.");
+    }
+
+    const exp = Math.floor(Date.now() / 1000) + 60 * 60 * 2; // 2h expiry
+
+    const payload = { user_id: cleanUserId, exp };
+
+    const token = jwt.sign(payload, apiSecret, { algorithm: "HS256" });
+
+    return NextResponse.json({
+      token
+      
+    });
   } catch (err) {
-    console.error('❌ Token GET error:', err);
-    return NextResponse.json({ error: 'Failed to create token' }, { status: 500 });
+    console.error("❌ Token generation failed:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
-}
-
-export async function POST(req) {
-  // just reuse same logic (so either method works)
-  return GET(req);
 }
