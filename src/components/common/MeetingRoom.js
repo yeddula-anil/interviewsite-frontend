@@ -14,112 +14,111 @@ export default function StreamCallRoom() {
   const { roomId } = useParams();
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
-  const [isConnecting, setIsConnecting] = useState(true);
-  const [status, setStatus] = useState('🔄 Initializing...');
+  const [status, setStatus] = useState('🔄 Waiting for initialization...');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId) {
+      console.warn('⚠️ No roomId found in URL.');
+      setStatus('⚠️ No room ID provided.');
+      return;
+    }
+
+    console.log(`📞 Room detected: ${roomId}`);
     let streamClient, callInstance;
     const username = `user-${Math.floor(Math.random() * 10000)}`;
 
-    (async () => {
+    const init = async () => {
       try {
-        console.log(`🚀 Joining Stream call: ${roomId} as ${username}`);
-        setStatus('📡 Fetching token...');
+        setStatus('📡 Fetching Stream token...');
+        console.log('🔍 Requesting token for:', username);
 
-        // 1️⃣ Fetch Stream token from backend
+        // === STEP 1: Fetch token ===
         const res = await axios.get(`/api/stream/token?user_id=${encodeURIComponent(username)}`);
+        console.log('🧾 Token Response:', res.data);
         const token = res.data?.token;
-        if (!token) throw new Error('❌ No token received from backend');
-        console.log('✅ Token fetched successfully');
+        if (!token) throw new Error('No token returned from backend');
+        setStatus('✅ Token fetched successfully');
 
-        // 2️⃣ Initialize Stream client
-        console.log('🔑 Stream API Key:', process.env.NEXT_PUBLIC_STREAM_API_KEY);
-        if (!process.env.NEXT_PUBLIC_STREAM_API_KEY) throw new Error('❌ Stream API key missing!');
-        setStatus('🧠 Connecting to Stream...');
+        // === STEP 2: Init Stream client ===
+        const apiKey = process.env.NEXT_PUBLIC_STREAM_API_KEY;
+        console.log('🔑 Stream API Key:', apiKey);
+        if (!apiKey) throw new Error('Missing Stream API Key in env');
 
+        setStatus('🧠 Initializing Stream client...');
         streamClient = new StreamVideoClient({
-          apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
+          apiKey,
           options: { disable_location_hint: true },
         });
 
-        // 3️⃣ Connect user
+        // === STEP 3: Connect user ===
+        setStatus('👤 Connecting user to Stream...');
         console.log('🧠 Connecting user...');
         await streamClient.connectUser({ id: username, name: username }, token);
-        console.log('✅ Stream user connected');
-        setStatus('🔗 User connected to Stream');
+        console.log('✅ User connected to Stream');
+        setStatus('✅ Stream user connected');
 
-        // 4️⃣ Join or create call
-        console.log('📞 Creating/joining call:', roomId);
-        setStatus('🎥 Joining call...');
+        // === STEP 4: Join or create call ===
+        setStatus('🎥 Joining Stream call...');
         callInstance = streamClient.call('default', roomId);
         await callInstance.join({ create: true });
-        console.log('🎬 Joined call successfully');
+        console.log('🎬 Joined Stream call successfully');
 
-        // ✅ Done
         setClient(streamClient);
         setCall(callInstance);
-        setIsConnecting(false);
         setStatus('✅ Connected to meeting');
-
-        // Optional: Timeout if stuck
-        setTimeout(() => {
-          if (isConnecting) {
-            console.warn('⚠️ Stream connection taking too long...');
-            setIsConnecting(false);
-            setStatus('⚠️ Connection timeout');
-          }
-        }, 15000);
       } catch (err) {
         console.error('❌ Stream init error:', err);
-        setStatus(`❌ ${err.message}`);
-        setIsConnecting(false);
+        setError(err.message);
+        setStatus('❌ Failed to initialize');
       }
-    })();
+    };
+
+    init();
 
     // Cleanup on unmount
     return () => {
       (async () => {
         try {
-          console.log('🧹 Disconnecting Stream client...');
+          console.log('🧹 Cleaning up Stream session...');
           await callInstance?.leave();
           await streamClient?.disconnectUser();
-        } catch (e) {
-          console.warn('⚠️ Cleanup failed:', e);
+        } catch (err) {
+          console.warn('⚠️ Cleanup error:', err);
         }
       })();
     };
   }, [roomId]);
 
-  // Loading / error UI
-  if (isConnecting) {
+  // === UI States ===
+  if (error) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-black text-gray-300 space-y-3">
-        <div className="animate-pulse text-lg">{status}</div>
-        <div className="text-sm opacity-70">(Check browser console for more details)</div>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-black text-red-500 space-y-3">
+        <p className="text-xl font-semibold">❌ Stream Initialization Failed</p>
+        <p>{error}</p>
+        <p className="text-gray-400">Check browser console for details.</p>
       </div>
     );
   }
 
   if (!client || !call) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-black text-red-500 text-lg">
-        Failed to connect to Stream.
+      <div className="flex flex-col items-center justify-center min-h-screen bg-black text-gray-300 space-y-2">
+        <p className="text-lg animate-pulse">{status}</p>
+        <p className="text-sm opacity-60">(Open console for live logs)</p>
       </div>
     );
   }
 
-  // Main UI
+  // === Main Video UI ===
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
         <div className="relative flex items-center justify-center min-h-screen bg-black">
-          {/* Remote participant */}
           <div className="relative w-[90vw] md:w-[70vw] aspect-video bg-gray-900 rounded-lg overflow-hidden border border-gray-700 flex items-center justify-center">
             <RemoteParticipant />
           </div>
 
-          {/* Local participant (PiP) */}
           <div className="absolute bottom-6 right-6 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900 z-10">
             <LocalParticipant />
           </div>
@@ -129,7 +128,7 @@ export default function StreamCallRoom() {
   );
 }
 
-// === Local & Remote Video Components ===
+// === Participant Components ===
 function RemoteParticipant() {
   const { useParticipants } = useCallStateHooks();
   const participants = useParticipants();
