@@ -43,7 +43,11 @@ export async function initStreamCall(prejoin) {
 
   console.log(`📞 Joining or creating call: ${prejoin.meetingId}`);
   await callInstance.join({ create: true }); // auto-creates if first user
-  console.log(`🎥 Joined meeting ${prejoin.meetingId} as ${username}`);
+
+console.log(`🎥 Joined meeting ${prejoin.meetingId} as ${username}`);
+console.log("✅ Joined call ID:", callInstance.id);
+console.log("🔍 Call type:", callInstance.type);
+
 
   // ✅ Set up camera & mic
   try {
