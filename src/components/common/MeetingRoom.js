@@ -1,69 +1,59 @@
 'use client';
-import React, { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import React, { useEffect, useState, lazy, Suspense, useRef } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import {
   StreamVideoClient,
-  StreamCall,
   StreamVideo,
+  StreamCall,
   ParticipantView,
   useCallStateHooks,
 } from '@stream-io/video-react-sdk';
 import axios from 'axios';
+import {
+  FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash, FaDesktop, FaPhoneSlash,
+  FaComments, FaCode, FaExpand, FaCompress, FaPaperPlane, FaToggleOn, FaToggleOff,
+  FaCircle, FaStop
+} from 'react-icons/fa';
 
-export default function StreamCallRoom() {
+const Editor = lazy(() => import('@monaco-editor/react'));
+
+export default function MeetingRoom() {
   const { meetingId } = useParams();
-  const roomId=meetingId
+  const router = useRouter();
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
-  const [status, setStatus] = useState('🔄 Waiting for initialization...');
+  const [status, setStatus] = useState('🔄 Initializing...');
   const [error, setError] = useState(null);
+  const [autoScoring, setAutoScoring] = useState(false);
 
   useEffect(() => {
-    if (!roomId) {
-      console.warn('⚠️ No roomId found in URL.');
-      setStatus('⚠️ No room ID provided.');
+    if (!meetingId) {
+      setStatus('⚠️ No meeting ID found.');
       return;
     }
 
-    console.log(`📞 Room detected: ${roomId}`);
-    let streamClient, callInstance;
     const username = `user-${Math.floor(Math.random() * 10000)}`;
+    let streamClient, callInstance;
 
     const init = async () => {
       try {
         setStatus('📡 Fetching Stream token...');
-        console.log('🔍 Requesting token for:', username);
-
-        // === STEP 1: Fetch token ===
         const res = await axios.get(`/api/stream/token?user_id=${encodeURIComponent(username)}`);
-        console.log('🧾 Token Response:', res.data);
         const token = res.data?.token;
         if (!token) throw new Error('No token returned from backend');
         setStatus('✅ Token fetched successfully');
 
-        // === STEP 2: Init Stream client ===
         const apiKey = process.env.NEXT_PUBLIC_STREAM_API_KEY;
-        console.log('🔑 Stream API Key:', apiKey);
-        if (!apiKey) throw new Error('Missing Stream API Key in env');
+        if (!apiKey) throw new Error('Missing Stream API Key');
+        streamClient = new StreamVideoClient({ apiKey, options: { disable_location_hint: true } });
 
-        setStatus('🧠 Initializing Stream client...');
-        streamClient = new StreamVideoClient({
-          apiKey,
-          options: { disable_location_hint: true },
-        });
-
-        // === STEP 3: Connect user ===
-        setStatus('👤 Connecting user to Stream...');
-        console.log('🧠 Connecting user...');
+        setStatus('👤 Connecting user...');
         await streamClient.connectUser({ id: username, name: username }, token);
-        console.log('✅ User connected to Stream');
         setStatus('✅ Stream user connected');
 
-        // === STEP 4: Join or create call ===
-        setStatus('🎥 Joining Stream call...');
-        callInstance = streamClient.call('default', roomId);
+        setStatus('🎥 Joining call...');
+        callInstance = streamClient.call('default', meetingId);
         await callInstance.join({ create: true });
-        console.log('🎬 Joined Stream call successfully');
 
         setClient(streamClient);
         setCall(callInstance);
@@ -77,21 +67,16 @@ export default function StreamCallRoom() {
 
     init();
 
-    // Cleanup on unmount
     return () => {
       (async () => {
         try {
-          console.log('🧹 Cleaning up Stream session...');
           await callInstance?.leave();
           await streamClient?.disconnectUser();
-        } catch (err) {
-          console.warn('⚠️ Cleanup error:', err);
-        }
+        } catch {}
       })();
     };
-  }, [roomId]);
+  }, [meetingId]);
 
-  // === UI States ===
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-black text-red-500 space-y-3">
@@ -106,51 +91,195 @@ export default function StreamCallRoom() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-black text-gray-300 space-y-2">
         <p className="text-lg animate-pulse">{status}</p>
-        <p className="text-sm opacity-60">(Open console for live logs)</p>
+        <p className="text-sm opacity-60">(Open console for logs)</p>
       </div>
     );
   }
 
-  // === Main Video UI ===
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
-        <div className="relative flex items-center justify-center min-h-screen bg-black">
-          <div className="relative w-[90vw] md:w-[70vw] aspect-video bg-gray-900 rounded-lg overflow-hidden border border-gray-700 flex items-center justify-center">
-            <RemoteParticipant />
-          </div>
-
-          <div className="absolute bottom-6 right-6 w-40 h-28 rounded overflow-hidden border border-gray-700 bg-gray-900 z-10">
-            <LocalParticipant />
-          </div>
-        </div>
+        <CallUI call={call} username="User" autoScoring={autoScoring} setAutoScoring={setAutoScoring} />
       </StreamCall>
     </StreamVideo>
   );
 }
 
-// === Participant Components ===
-function RemoteParticipant() {
-  const { useParticipants } = useCallStateHooks();
+const CallUI = ({ call, username, autoScoring, setAutoScoring }) => {
+  const {
+    useParticipants, useLocalParticipant,
+    useCameraState, useMicrophoneState, useScreenShareState
+  } = useCallStateHooks();
+
   const participants = useParticipants();
-  const remote = participants.find((p) => !p.isLocalParticipant);
-
-  if (!remote)
-    return <p className="text-gray-400 text-lg">Waiting for the other participant...</p>;
-
-  return <ParticipantView participant={remote} className="w-full h-full object-cover" />;
-}
-
-function LocalParticipant() {
-  const { useLocalParticipant } = useCallStateHooks();
   const local = useLocalParticipant();
+  const camState = useCameraState();
+  const micState = useMicrophoneState();
+  const screenShareState = useScreenShareState();
 
-  if (!local)
-    return (
-      <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">
-        Camera not active
+  const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
+  const [editorOpen, setEditorOpen] = useState(true);
+  const [editorMax, setEditorMax] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [recording, setRecording] = useState(false);
+  const [recordTime, setRecordTime] = useState(0);
+
+  const remote = participants.find(p => !p.isLocalParticipant);
+  const chatRef = useRef();
+
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  }, [chatMessages]);
+
+  useEffect(() => {
+    let timer;
+    if (recording) timer = setInterval(() => setRecordTime(t => t + 1), 1000);
+    else setRecordTime(0);
+    return () => clearInterval(timer);
+  }, [recording]);
+
+  const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+
+  const leave = async () => {
+    await call.leave();
+    await call.client.disconnectUser();
+    window.location.href = '/';
+  };
+
+  const toggleMic = async () => {
+    setMicOn(v => !v);
+    if (micOn) await call.microphone.disable();
+    else await call.microphone.enable();
+  };
+
+  const toggleCam = async () => {
+    setCamOn(v => !v);
+    if (camOn) await call.camera.disable();
+    else await call.camera.enable();
+  };
+
+  const toggleRec = async () => {
+    if (recording) await call.stopRecording();
+    else await call.startRecording();
+    setRecording(r => !r);
+  };
+
+  const sendChat = () => {
+    if (!chatInput.trim()) return;
+    setChatMessages(m => [...m, { sender: username, text: chatInput }]);
+    setChatInput('');
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
+      {/* Top layout */}
+      <div className="flex-1 flex gap-3 overflow-hidden p-2">
+        {/* Editor */}
+        {editorOpen && (
+          <div className={`${editorMax ? 'fixed inset-0 z-50 w-full h-full' : 'w-1/3'}
+            bg-gray-800 border border-gray-700 flex flex-col`}>
+            <div className="p-2 bg-gray-700 flex justify-between items-center">
+              <span>Code Editor</span>
+              <div className="flex gap-2">
+                <button onClick={() => setEditorMax(!editorMax)}>{editorMax ? <FaCompress /> : <FaExpand />}</button>
+                <button onClick={() => setEditorOpen(false)}>Close</button>
+              </div>
+            </div>
+            <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
+              <Editor
+                height="100%"
+                theme="vs-dark"
+                options={{ fontSize: 14, minimap: { enabled: false } }}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {/* Video */}
+        {!editorMax && (
+          <div className="flex-1 bg-black rounded-lg border border-gray-700 relative flex items-center justify-center">
+            {remote ? (
+              <ParticipantView participant={remote} className="w-full h-full object-cover" />
+            ) : (
+              <div className="text-gray-400 text-lg">Waiting for participant...</div>
+            )}
+            {local && (
+              <div className="absolute bottom-4 right-4 w-40 h-28 border border-gray-700 rounded bg-gray-900 overflow-hidden">
+                {camOn ? (
+                  <ParticipantView participant={local} className="w-full h-full" />
+                ) : (
+                  <div className="flex items-center justify-center text-3xl bg-gray-800 text-gray-300">{username[0]}</div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Chat */}
+        {!editorMax && chatOpen && (
+          <div className="w-1/4 bg-gray-800 border border-gray-700 rounded flex flex-col">
+            <div className="p-2 bg-gray-700 flex justify-between items-center">
+              <span>Chat</span>
+              <button onClick={() => setChatOpen(false)}>Close</button>
+            </div>
+            <div ref={chatRef} className="flex-1 overflow-y-auto p-2 space-y-2">
+              {chatMessages.map((m, i) => (
+                <div key={i} className={`p-2 rounded ${m.sender === username ? 'bg-teal-700 self-end' : 'bg-gray-700'}`}>
+                  <p className="text-xs text-gray-300">{m.sender}</p>
+                  <p>{m.text}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex p-2 border-t border-gray-700">
+              <input
+                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+                placeholder="Type a message..."
+              />
+              <button onClick={sendChat} className="ml-2 p-2 bg-teal-600 rounded">
+                <FaPaperPlane />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
-    );
 
-  return <ParticipantView participant={local} className="w-full h-full object-cover" />;
-}
+      {/* Bottom Controls */}
+      <div className="flex justify-between items-center p-3 border-t border-gray-800 bg-gray-900">
+        <button onClick={() => setEditorOpen(!editorOpen)} className="bg-gray-800 px-3 py-2 rounded flex gap-2 items-center">
+          <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
+        </button>
+
+        <div className="flex gap-4 items-center">
+          <button onClick={toggleMic} className={`p-3 rounded-full border ${micOn ? 'border-teal-400' : 'border-red-500'}`}>
+            {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
+          </button>
+          <button onClick={toggleCam} className={`p-3 rounded-full border ${camOn ? 'border-teal-400' : 'border-red-500'}`}>
+            {camOn ? <FaVideo /> : <FaVideoSlash />}
+          </button>
+          <button
+            onClick={() => (screenShare?.isEnabled ? stopScreenShare() : startScreenShare())}
+            className={`p-3 rounded-full border ${screenShare?.isEnabled ? 'border-teal-400' : 'border-gray-400'}`}
+          >
+            <FaDesktop />
+          </button>
+          <button onClick={toggleRec} className={`p-3 rounded-full border ${recording ? 'border-red-500' : 'border-gray-400'}`}>
+            {recording ? <FaStop /> : <FaCircle />}
+          </button>
+          {recording && <span className="text-red-500 font-mono text-sm">{fmt(recordTime)}</span>}
+          <button onClick={leave} className="p-3 bg-red-600 rounded-full"><FaPhoneSlash /></button>
+        </div>
+
+        <button onClick={() => setChatOpen(!chatOpen)} className="bg-gray-800 px-3 py-2 rounded flex gap-2 items-center">
+          <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
+        </button>
+      </div>
+    </div>
+  );
+};
