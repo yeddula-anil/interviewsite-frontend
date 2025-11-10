@@ -13,7 +13,7 @@ export async function initStreamCall(prejoin) {
   if (!prejoin?.meetingId) throw new Error('❌ Missing meetingId in prejoin data.');
 
   const safeName = slugify(prejoin.name || 'guest');
-  const role = slugify(prejoin.role || 'participant');
+  const role = slugify(prejoin.role || 'participant').toLowerCase();
   const username = `${role}-${safeName}`;
 
   console.log(`🎯 Attempting to join call as: ${username}`);

@@ -507,7 +507,7 @@ const MeetingRoom = () => {
 
   const prejoin = JSON.parse(sessionStorage.getItem('prejoin')) || {};
   const username = prejoin?.name || 'Guest';
-  const isRecruiter = prejoin?.role === 'RECRUITER';
+  const isRecruiter = prejoin?.role.toLowerCase() === 'recruiter';
 
   return (
     <StreamVideo client={client}>
