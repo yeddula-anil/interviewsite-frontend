@@ -58,11 +58,21 @@ const CallUI = ({ call, username, isRecruiter, autoScoring, setAutoScoring, room
   const { microphone } = micState;
   const { screenShare, startScreenShare, stopScreenShare } = screenShareState;
 
-  // Only treat a remote as "joined" if actually present and connected
+// ✅ Detect remote participants more reliably
   const otherParticipants = participants.filter(
-    (p) => !p.isLocalParticipant && p.state === 'joined'
+    (p) => !p.isLocalParticipant && ['joining', 'joined', 'connected'].includes(p.state)
   );
   const remoteParticipant = otherParticipants.length ? otherParticipants[0] : null;
+
+  // 🧠 Debug: Log all participants & states
+  useEffect(() => {
+    console.log("👥 Participants:", participants.map(p => ({
+      id: p.user?.id,
+      state: p.state,
+      isLocal: p.isLocalParticipant,
+    })));
+  }, [participants]);
+
 
   const localVideoRef = useRef(null);
   const chatContainerRef = useRef(null);
