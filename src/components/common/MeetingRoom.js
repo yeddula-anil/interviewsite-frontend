@@ -11,7 +11,8 @@ import {
 import axios from 'axios';
 
 export default function StreamCallRoom() {
-  const { roomId } = useParams();
+  const { meetingId } = useParams();
+  const roomId=meetingId
   const [client, setClient] = useState(null);
   const [call, setCall] = useState(null);
   const [status, setStatus] = useState('🔄 Waiting for initialization...');
