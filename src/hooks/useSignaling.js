@@ -4,107 +4,96 @@ import SockJS from 'sockjs-client';
 import { Client } from '@stomp/stompjs';
 
 /**
- * useSignaling Hook
- * Handles STOMP WebSocket connection, message subscription, and safe send.
+ * useSignaling — Handles STOMP WebSocket signaling for WebRTC.
  */
 export function useSignaling({ roomId, userName, onMessage }) {
   const [connected, setConnected] = useState(false);
   const stompClient = useRef(null);
   const connectedRef = useRef(false);
-  const joinedRef = useRef(false);
-  const connectPromiseRef = useRef(null); // ✅ for awaiting connection
-
   const wsUrl = `${process.env.NEXT_PUBLIC_API_URL}/ws`;
 
-  // ✅ Safe send method (won’t fail silently)
+  // ---- Send message ----
   const send = useCallback(
     (type, data) => {
-      if (!connectedRef.current || !stompClient.current?.connected) {
-        console.warn('[useSignaling] Tried to send before connected:', type);
+      if (!connectedRef.current || !stompClient.current) {
+        console.warn('[Signaling] Not connected, cannot send');
         return;
       }
-      const payload = { type: String(type || '').toLowerCase(), data, sender: userName };
-      stompClient.current.publish({
-        destination: `/app/signal/${roomId}`,
-        body: JSON.stringify(payload),
-      });
+      const payload = { type, data, sender: userName };
+      try {
+        stompClient.current.publish({
+          destination: `/app/signal/${roomId}`,
+          body: JSON.stringify(payload),
+        });
+      } catch (err) {
+        console.error('[Signaling] Publish failed:', err);
+      }
     },
     [roomId, userName]
   );
 
-  // ✅ Wait until STOMP is connected
-  const waitForConnection = useCallback(async () => {
-    if (connectedRef.current) return true;
-    if (!connectPromiseRef.current) {
-      connectPromiseRef.current = new Promise((resolve) => {
-        const check = setInterval(() => {
-          if (connectedRef.current && stompClient.current?.connected) {
-            clearInterval(check);
-            resolve(true);
-          }
-        }, 200);
-      });
-    }
-    return connectPromiseRef.current;
-  }, []);
-
-  // ✅ STOMP setup
   useEffect(() => {
     if (!roomId || !userName) return;
+
+    // Prevent duplicate connections
+    if (stompClient.current && connectedRef.current) {
+      console.log('[Signaling] Already connected — skipping re-init');
+      return;
+    }
+
+    console.log(`[Signaling] Connecting to room ${roomId} as ${userName}`);
 
     const socket = new SockJS(wsUrl);
     const client = new Client({
       webSocketFactory: () => socket,
-      reconnectDelay: 3000,
-      heartbeatIncoming: 10000,
-      heartbeatOutgoing: 10000,
-      debug: (msg) => console.log('[STOMP]', msg),
-
+      reconnectDelay: 3000, // retry every 3s
       onConnect: () => {
-        console.log('✅ STOMP connected');
         connectedRef.current = true;
         setConnected(true);
-
+        console.log('✅ STOMP connected');
         client.subscribe(`/topic/signal/${roomId}`, (frame) => {
           try {
             const msg = JSON.parse(frame.body);
             if (msg.sender === userName) return;
-            onMessage?.(msg);
+            // Safe reference capture (won’t break even if onMessage changes)
+            if (typeof onMessage === 'function') onMessage(msg);
           } catch (e) {
-            console.error('[useSignaling] Invalid message:', e);
+            console.error('[Signaling] Invalid message', e);
           }
         });
-
-        if (!joinedRef.current) {
-          joinedRef.current = true;
-          send('join', { name: userName });
-        }
       },
-
       onDisconnect: () => {
-        console.warn('[STOMP] Disconnected');
+        console.log('❌ STOMP disconnected');
         connectedRef.current = false;
         setConnected(false);
       },
-
-      onWebSocketError: (e) => console.error('[STOMP] WebSocket error:', e),
-      onStompError: (frame) => console.error('[STOMP] Error:', frame?.headers?.message),
+      onStompError: (frame) => {
+        console.error('[STOMP ERROR]', frame.headers['message'], frame.body);
+      },
+      onWebSocketError: (err) => {
+        console.error('[WebSocket Error]', err);
+      },
     });
 
     stompClient.current = client;
     client.activate();
 
+    // Cleanup
     return () => {
-      console.log('[STOMP] Cleaning up connection...');
-      try {
-        client.deactivate();
-      } catch {}
+      console.log('[Signaling] Cleaning up connection');
       connectedRef.current = false;
-      joinedRef.current = false;
       setConnected(false);
-      connectPromiseRef.current = null;
+      if (stompClient.current) {
+        try {
+          stompClient.current.deactivate();
+          stompClient.current = null;
+        } catch (e) {
+          console.warn('[Signaling] Error during cleanup', e);
+        }
+      }
     };
-  }, [roomId, userName, onMessage, wsUrl, send]);
+  // ⛔ Removed onMessage from dependencies
+  }, [roomId, userName, wsUrl]);
 
-  return { connected, send, waitForConnection };
+  return { connected, send };
 }

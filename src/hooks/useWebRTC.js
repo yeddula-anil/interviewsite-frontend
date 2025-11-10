@@ -1,200 +1,82 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-/**
- * useWebRTC — robust version
- * - Queues ICE candidates until remoteDescription is set
- * - Defers offer until PC + media ready
- * - Uses multiple reliable STUN and TURN servers for network traversal.
- * - Emits connection events you can use to hide "Connecting..."
- */
-export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionChange }) {
+export function useWebRTC({ signaling, isOfferer }) {
   const pcRef = useRef(null);
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const localStream = useRef(null);
+  const dataChannelRef = useRef(null);
 
-  // readiness + state
-  const initializedRef = useRef(false);
-  const [started, setStarted] = useState(false);
-  const [pcReady, setPcReady] = useState(false);
-
-  // candidate queue until remoteDescription is set
+  const [messages, setMessages] = useState([]);
+  const [code, setCode] = useState('// Start coding...\n');
   const remoteDescSetRef = useRef(false);
   const candidateQueueRef = useRef([]);
 
-  const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
-  const [screenSharing, setScreenSharing] = useState(false);
-
-  const safeSend = useCallback(
+  const safeSendSignal = useCallback(
     (type, data) => {
-      if (!signaling?.send || typeof signaling.send !== 'function') {
-        console.warn('⚠️ Tried to send before signaling ready:', type);
-        return;
-      }
-      console.log(`📤 Sending ${type}`);
+      if (!signaling?.send) return console.warn('Signaling not ready');
       signaling.send(type, data);
     },
     [signaling]
   );
 
   useEffect(() => {
-    if (initializedRef.current) return;
-    initializedRef.current = true;
-
-    console.log('🎬 Initializing WebRTC...');
-
-    // [!FIX] This is the most important change.
-    // Added reliable public TURN servers to relay video when a
-    // direct STUN connection fails on complex networks.
     const pc = new RTCPeerConnection({
       iceServers: [
-        // Start with reliable STUN
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun.metered.ca:80' },
-        // Fallback to reliable TURN
-        {
-          urls: 'turn:turn.metered.ca:80?transport=tcp',
-          username: 'guest',
-          credential: 'guest',
-        },
-        {
-          urls: 'turn:turn.metered.ca:443?transport=tcp',
-          username: 'guest',
-          credential: 'guest',
-        },
-        {
-          urls: 'turns:turn.metered.ca:443?transport=tcp',
-          username: 'guest',
-          credential: 'guest',
-        },
       ],
     });
     pcRef.current = pc;
 
-    pc.ontrack = (event) => {
-      console.log('🎥 Remote stream received');
-      const stream = event.streams[0];
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
-        remoteVideoRef.current.play?.().catch(() => {});
-      }
-      onRemoteStream?.(stream);
-    };
+    if (isOfferer) {
+      const dc = pc.createDataChannel('data');
+      setupDataChannel(dc);
+    } else {
+      pc.ondatachannel = (e) => setupDataChannel(e.channel);
+    }
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        safeSend('candidate', event.candidate);
-      }
+      if (event.candidate) safeSendSignal('candidate', event.candidate);
     };
 
-    pc.oniceconnectionstatechange = () => {
-      console.log('🧊 ICE state:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        onConnectionChange?.('connected');
-      }
-      if (pc.iceConnectionState === 'failed') {
-        console.error('ICE connection failed.');
-        onConnectionChange?.('failed');
-      }
-      if (pc.iceConnectionState === 'disconnected') {
-        onConnectionChange?.('disconnected');
-      }
-    };
+    async function setupDataChannel(channel) {
+      dataChannelRef.current = channel;
 
-    pc.onconnectionstatechange = () => {
-      console.log('🔗 Connection state:', pc.connectionState);
-      onConnectionChange?.(pc.connectionState);
-    };
+      channel.onopen = () => console.log('📡 Data channel open');
+      channel.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'chat') setMessages((prev) => [...prev, msg.payload]);
+        if (msg.type === 'code') setCode(msg.payload);
+      };
+    }
 
-    setPcReady(true);
+    return () => pc.close();
+  }, [isOfferer, safeSendSignal]);
 
-    // Media setup
-    (async () => {
-      try {
-        console.log('🔎 Checking devices...');
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const hasVideo = devices.some((d) => d.kind === 'videoinput');
-        const hasAudio = devices.some((d) => d.kind === 'audioinput');
-
-        const constraints = {
-          video: hasVideo ? { width: 1280, height: 720 } : false,
-          audio: hasAudio,
-        };
-
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        localStream.current = stream;
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          await localVideoRef.current.play?.().catch(() => {});
-        }
-
-        // Add tracks AFTER assigning localStream to avoid races
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-        console.log('✅ Local media ready');
-        setStarted(true);
-      } catch (err) {
-        console.error('❌ Failed to access media devices:', err);
-        // We won't use alert() as it's bad practice in hooks and will be
-        // blocked by the browser in many contexts.
-      }
-    })();
-
-    // Only close on tab close; don’t flap on re-renders
-    const handleUnload = () => {
-      try { pcRef.current?.close(); } catch {}
-      localStream.current?.getTracks().forEach((t) => t.stop());
-    };
-    window.addEventListener('beforeunload', handleUnload);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-      console.log('⚙️ Skipping PC close on re-render');
-    };
-  }, [safeSend, onRemoteStream, onConnectionChange]);
-
-  // Handle signaling
+  // handle incoming signaling messages
   const handleSignal = useCallback(
     async ({ type, data }) => {
       const pc = pcRef.current;
       if (!pc) return;
 
-      switch ((type || '').toLowerCase()) {
+      switch (type) {
         case 'offer': {
-          console.log('📩 Offer received');
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           remoteDescSetRef.current = true;
-
-          // Flush any queued candidates
           if (candidateQueueRef.current.length) {
-            console.log(`🧊 Applying queued candidates (${candidateQueueRef.current.length})`);
-            for (const c of candidateQueueRef.current) {
-              try { await pc.addIceCandidate(c); } catch (e) { console.warn('ICE add (queued) failed:', e); }
-            }
+            for (const c of candidateQueueRef.current) await pc.addIceCandidate(c);
             candidateQueueRef.current = [];
           }
-
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          safeSend('answer', answer);
+          safeSendSignal('answer', answer);
           break;
         }
 
         case 'answer': {
-          console.log('📩 Answer received');
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           remoteDescSetRef.current = true;
-
-          // Flush queued candidates for offerer
           if (candidateQueueRef.current.length) {
-            console.log(`🧊 Applying queued candidates (${candidateQueueRef.current.length})`);
-            for (const c of candidateQueueRef.current) {
-              try { await pc.addIceCandidate(c); } catch (e) { console.warn('ICE add (queued) failed:', e); }
-            }
+            for (const c of candidateQueueRef.current) await pc.addIceCandidate(c);
             candidateQueueRef.current = [];
           }
           break;
@@ -202,116 +84,46 @@ export function useWebRTC({ signaling, isOfferer, onRemoteStream, onConnectionCh
 
         case 'candidate': {
           const cand = new RTCIceCandidate(data);
-          if (!remoteDescSetRef.current) {
-            // Queue until remoteDescription is set
-            candidateQueueRef.current.push(cand);
-            console.log(`🧊 Queued ICE candidate (${candidateQueueRef.current.length})`);
-          } else {
-            try {
-              await pc.addIceCandidate(cand);
-              console.log('🧊 ICE candidate added');
-            } catch (err) {
-              console.warn('⚠️ Failed to add ICE candidate:', err);
-            }
-          }
+          if (!remoteDescSetRef.current) candidateQueueRef.current.push(cand);
+          else await pc.addIceCandidate(cand);
           break;
         }
-
-        default:
-          console.log(`ℹ️ Unknown signal type: ${type}`);
       }
     },
-    [safeSend]
+    [safeSendSignal]
   );
 
-  // Offerer start (with retry if too early)
+  // Offerer starts connection
   const start = useCallback(async () => {
     const pc = pcRef.current;
+    if (!isOfferer || !pc) return;
 
-    if (!isOfferer) return;
-    if (!pc || !pcReady || !started) {
-      console.log('⏳ Waiting for PC and media...');
-      setTimeout(start, 400);
-      return;
-    }
-    if (pc.signalingState === 'closed') {
-      console.warn('⚠️ Cannot create offer: PC closed');
-      return;
-    }
-
-    // Only create offer if signaling state is 'stable'
-    if (pc.signalingState !== 'stable') {
-      console.log('Signaling already in progress, skipping start()');
-      return;
-    }
-
-    console.log('🧠 Creating and sending offer...');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    safeSend('offer', offer);
-  }, [isOfferer, pcReady, started, safeSend]);
+    safeSendSignal('offer', offer);
+  }, [isOfferer, safeSendSignal]);
 
-  // Controls
-  const toggleMic = () => {
-    const enabled = !micOn;
-    localStream.current?.getAudioTracks().forEach((t) => (t.enabled = enabled));
-    setMicOn(enabled);
+  const sendChat = (text, sender) => {
+    if (dataChannelRef.current?.readyState === 'open') {
+      const msg = { id: Date.now(), sender, text };
+      dataChannelRef.current.send(JSON.stringify({ type: 'chat', payload: msg }));
+      setMessages((prev) => [...prev, msg]);
+    }
   };
 
-  const toggleCam = () => {
-    const enabled = !camOn;
-    localStream.current?.getVideoTracks().forEach((t) => (t.enabled = enabled));
-    setCamOn(enabled);
-  };
-
-  const toggleScreenShare = async () => {
-    if (!screenSharing) {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-
-        if (sender) {
-          sender.replaceTrack(screenTrack);
-          screenTrack.onended = () => toggleScreenShare(); // Revert on stop
-          setScreenSharing(true);
-        } else {
-          console.warn('Could not find video sender to replace track.');
-        }
-      } catch (err) {
-        console.error('Error starting screen share:', err);
-      }
-    } else {
-      try {
-        const camTrack = localStream.current?.getVideoTracks()[0];
-        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-
-        if (sender && camTrack) {
-          sender.replaceTrack(camTrack);
-          setScreenSharing(false);
-        } else {
-          console.warn('Could not find sender or camera track to revert.');
-          // As a fallback, stop the screen track if it exists
-          const currentSender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-          currentSender?.track?.stop(); // Stop the screen track
-          setScreenSharing(false);
-        }
-      } catch (err) {
-        console.error('Error stopping screen share:', err);
-      }
+  const sendCode = (codeText) => {
+    if (dataChannelRef.current?.readyState === 'open') {
+      dataChannelRef.current.send(JSON.stringify({ type: 'code', payload: codeText }));
     }
   };
 
   return {
-    localVideoRef,
-    remoteVideoRef,
     handleSignal,
     start,
-    micOn,
-    camOn,
-    toggleMic,
-    toggleCam,
-    toggleScreenShare,
-    localStream,
+    messages,
+    sendChat,
+    code,
+    sendCode,
+    setCode,
   };
 }
