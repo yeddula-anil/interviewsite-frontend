@@ -17,7 +17,7 @@ export async function initStreamCall(prejoin) {
 
   console.log(`🎯 Attempting to join call as: ${username}`);
 
-  // ✅ Fetch token
+  // ✅ Fetch token from your backend
   const res = await fetch('/api/stream/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -27,34 +27,21 @@ export async function initStreamCall(prejoin) {
   const { token } = await res.json();
   if (!token) throw new Error('❌ Failed to fetch Stream token.');
 
-  // ✅ Initialize Stream client
+  // ✅ Initialize Stream client (reuse if exists)
   const clientInstance = StreamVideoClient.getOrCreateInstance({
     apiKey: process.env.NEXT_PUBLIC_STREAM_API_KEY,
     user: { id: username, name: prejoin.name || 'Guest' },
     token,
   });
 
-  // ✅ Create call instance
+  // ✅ Create or join the call
   const callInstance = clientInstance.call('default', prejoin.meetingId);
-  let shouldCreate = false;
 
-  try {
-    await callInstance.get();
-    console.log('✅ Existing call found:', prejoin.meetingId);
-  } catch (err) {
-    if (err.code === 404) {
-      console.log('🆕 Creating new call:', prejoin.meetingId);
-      shouldCreate = true;
-    } else {
-      console.error('⚠️ Error checking call existence:', err);
-    }
-  }
-
-  // ✅ Force create for first user if needed
-  await callInstance.join({ create: true });
+  console.log(`📞 Joining or creating call: ${prejoin.meetingId}`);
+  await callInstance.join({ create: true }); // auto-creates if first user
   console.log(`🎥 Joined meeting ${prejoin.meetingId} as ${username}`);
 
-  // ✅ Enable media
+  // ✅ Set up camera & mic
   try {
     await callInstance.camera.createTrack?.();
     await callInstance.microphone.createTrack?.();

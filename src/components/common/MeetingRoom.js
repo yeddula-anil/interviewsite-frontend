@@ -414,49 +414,78 @@ const MeetingRoom = () => {
   const [autoScoring, setAutoScoring] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-    const prejoin = JSON.parse(sessionStorage.getItem('prejoin') || '{}');
-    if (!prejoin?.meetingId) {
-      router.push('/');
-      return;
-    }
+    if (!meetingId) return;
 
+    let isMounted = true;
     let callInstance = null;
     let clientInstance = null;
 
-    (async () => {
+    const initCall = async () => {
       try {
-        const { clientInstance: c, callInstance: callObj } = await initStreamCall(prejoin);
-        if (mounted) {
-          clientInstance = c;
-          callInstance = callObj;
-          setClient(c);
-          setCall(callObj);
-          setIsConnecting(false);
+        const prejoin = JSON.parse(sessionStorage.getItem('prejoin') || '{}');
+        if (!prejoin?.meetingId) {
+          router.push('/');
+          return;
         }
+
+        console.log(`🚀 Initializing call for meeting: ${prejoin.meetingId}`);
+
+        const { clientInstance: c, callInstance: callObj } = await initStreamCall(prejoin);
+        if (!isMounted) return;
+
+        clientInstance = c;
+        callInstance = callObj;
+
+        setClient(c);
+        setCall(callObj);
+        setIsConnecting(false);
+
+        // ✅ Register beforeunload (browser close/reload)
+        const handleUnload = async () => {
+          try {
+            console.log('🧹 Auto-disconnecting before unload...');
+            if (callObj) await callObj.leave();
+            if (c) await c.disconnectUser();
+          } catch (err) {
+            console.warn('⚠️ Auto-disconnect failed:', err);
+          }
+        };
+
+        window.addEventListener('beforeunload', handleUnload);
+        window.addEventListener('unload', handleUnload);
+
+        // ✅ Also handle route change
+        router.events?.on?.('routeChangeStart', handleUnload);
+
+        // Cleanup for this instance
+        return () => {
+          window.removeEventListener('beforeunload', handleUnload);
+          window.removeEventListener('unload', handleUnload);
+          router.events?.off?.('routeChangeStart', handleUnload);
+        };
       } catch (err) {
-        console.error('init error', err);
+        console.error('❌ init error', err);
         setIsConnecting(false);
       }
-    })();
-
-    const cleanup = async () => {
-      try {
-        if (callInstance) await callInstance.leave();
-        if (clientInstance) await clientInstance.disconnectUser();
-      } catch {}
     };
 
-    window.addEventListener('beforeunload', cleanup);
-    window.addEventListener('popstate', cleanup);
+    initCall();
 
+    // ✅ Final cleanup when meetingId changes or unmounts
     return () => {
-      mounted = false;
-      cleanup();
-      window.removeEventListener('beforeunload', cleanup);
-      window.removeEventListener('popstate', cleanup);
+      isMounted = false;
+      (async () => {
+        try {
+          console.log('🧹 Cleaning up call on unmount...');
+          if (callInstance) await callInstance.leave();
+          if (clientInstance) await clientInstance.disconnectUser();
+        } catch (err) {
+          console.warn('⚠️ Cleanup failed:', err);
+        }
+      })();
     };
-  }, [meetingId, router]);
+  }, [meetingId]);
+
 
   if (isConnecting) {
     return (
