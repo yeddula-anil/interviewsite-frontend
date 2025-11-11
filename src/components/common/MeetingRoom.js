@@ -18,6 +18,7 @@ import { useAuth } from '@/context/AuthProvider';
 import { useWebRTC } from '@/utils/useWebRTC';
 import { Client as StompClient } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import axiosInstance from '@/utils/axiosInstance';
 const Editor = lazy(() => import('@monaco-editor/react'));
 
 export default function MeetingRoom() {
@@ -157,7 +158,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
     return () => {
       client.deactivate();
-      axios.post(`${process.env.NEXT_PUBLIC_API_URL}/api/rooms/${meetingId}/leave`, { name: username });
+      axiosInstance.post(`/rooms/${meetingId}/leave`, { name: username });
     };
   }, [meetingId, username]);
 
