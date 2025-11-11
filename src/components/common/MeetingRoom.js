@@ -12,7 +12,7 @@ import axios from 'axios';
 import {
   FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash,
   FaPhoneSlash, FaComments, FaCode, FaExpand, FaCompress,
-  FaPaperPlane, FaCircle, FaStop
+  FaPaperPlane, FaCircle, FaStop, FaSpinner
 } from 'react-icons/fa';
 import { useAuth } from '@/context/AuthProvider';
 import { useWebRTC } from '@/utils/useWebRTC';
@@ -123,11 +123,31 @@ const CallUI = ({ call, meetingId, username, user }) => {
   const [recording, setRecording] = useState(false);
   const [recordTime, setRecordTime] = useState(0);
   const [recordingBadge, setRecordingBadge] = useState(false);
+  const [isReady, setIsReady] = useState(false);
 
-  // 🧠 WebRTC + STOMP setup
   const [stompClient, setStompClient] = useState(null);
-  const [isOfferer, setIsOfferer] = useState(false);
+  const [isOfferer, setIsOfferer] = useState(null);
   const handleSignalRef = useRef(null);
+
+  // 🧠 Matchmaking join logic
+  const joinMatchmaking = async () => {
+    try {
+      const res = await axiosInstance.post(`/matchmaking/join`, {
+        username,
+        meetingId,
+      });
+
+      if (res.data.matched) {
+        console.log("✅ Matched successfully:", res.data);
+        setIsOfferer(res.data.offerer === username);
+      } else {
+        console.log("⏳ Waiting for another participant...");
+        setTimeout(joinMatchmaking, 2000);
+      }
+    } catch (err) {
+      console.error("❌ Error joining queue:", err);
+    }
+  };
 
   useEffect(() => {
     if (!meetingId || !username) return;
@@ -139,11 +159,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
     client.onConnect = async () => {
       console.log('✅ Connected to signaling server');
-
-      const res = await axiosInstance.post(`/rooms/${meetingId}/join`, {
-        name: username,
-      });
-      setIsOfferer(!!res.data.isOfferer);
+      await joinMatchmaking(); // Wait until paired
 
       client.subscribe(`/topic/signal/${meetingId}`, (msg) => {
         const data = JSON.parse(msg.body);
@@ -158,11 +174,10 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
     return () => {
       client.deactivate();
-      axiosInstance.post(`/rooms/${meetingId}/leave`, { name: username });
+      axiosInstance.post(`/matchmaking/leave`, { username });
     };
   }, [meetingId, username]);
 
-  // ✅ Use custom WebRTC hook
   const {
     handleSignal,
     start,
@@ -191,11 +206,12 @@ const CallUI = ({ call, meetingId, username, user }) => {
   handleSignalRef.current = handleSignal;
 
   useEffect(() => {
-    if (stompClient?.connected && isOfferer !== null) {
-      console.log('🚀 Starting WebRTC DataChannel...');
+    if (stompClient?.connected && isOfferer !== null && !isReady) {
+      console.log('🚀 Matched! Starting WebRTC DataChannel...');
       start();
+      setTimeout(() => setIsReady(true), 2000);
     }
-  }, [stompClient, isOfferer, start]);
+  }, [stompClient, isOfferer, start, isReady]);
 
   const remote = participants.find(p => !p.isLocalParticipant);
   const chatRef = useRef();
@@ -204,7 +220,6 @@ const CallUI = ({ call, meetingId, username, user }) => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages]);
 
-  // Recording timer
   useEffect(() => {
     let timer;
     if (recording) timer = setInterval(() => setRecordTime(t => t + 1), 1000);
@@ -263,12 +278,13 @@ const CallUI = ({ call, meetingId, username, user }) => {
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
       <div className="flex-1 flex gap-3 overflow-hidden p-2">
+
         {/* Code Editor */}
         {editorOpen && (
           <div className={`${editorMax ? 'fixed inset-0 z-50 w-full h-full' : 'w-1/3'}
             bg-gray-800 border border-gray-700 flex flex-col`}>
             <div className="p-2 bg-gray-700 flex justify-between items-center">
-              <span>Code Editor</span>
+              <span>Code Editor {isReady ? '🟢' : '🔄 Loading...'}</span>
               <div className="flex gap-2">
                 <button onClick={() => setEditorMax(!editorMax)}>
                   {editorMax ? <FaCompress /> : <FaExpand />}
@@ -276,18 +292,25 @@ const CallUI = ({ call, meetingId, username, user }) => {
                 <button onClick={() => setEditorOpen(false)}>Close</button>
               </div>
             </div>
-            <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
-              <Editor
-                height="100%"
-                theme="vs-dark"
-                value={code}
-                onChange={(v) => {
-                  setCode(v);
-                  sendCode(v);
-                }}
-                options={{ fontSize: 14, minimap: { enabled: false } }}
-              />
-            </Suspense>
+            {!isReady ? (
+              <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                <FaSpinner className="animate-spin text-3xl mb-2" />
+                Connecting WebRTC...
+              </div>
+            ) : (
+              <Suspense fallback={<div className="p-4 text-gray-400">Loading Editor...</div>}>
+                <Editor
+                  height="100%"
+                  theme="vs-dark"
+                  value={code}
+                  onChange={(v) => {
+                    setCode(v);
+                    sendCode(v);
+                  }}
+                  options={{ fontSize: 14, minimap: { enabled: false } }}
+                />
+              </Suspense>
+            )}
           </div>
         )}
 
@@ -321,29 +344,37 @@ const CallUI = ({ call, meetingId, username, user }) => {
         {!editorMax && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 rounded flex flex-col">
             <div className="p-2 bg-gray-700 flex justify-between items-center">
-              <span>Chat</span>
+              <span>Chat {isReady ? '🟢' : '🔄 Loading...'}</span>
               <button onClick={() => setChatOpen(false)}>Close</button>
             </div>
-            <div ref={chatRef} className="flex-1 overflow-y-auto p-2 space-y-2">
-              {messages.map((m, i) => (
-                <div key={i} className={`p-2 rounded ${m.sender === username ? 'bg-teal-700 self-end' : 'bg-gray-700'}`}>
-                  <p className="text-xs text-gray-300">{m.sender}</p>
-                  <p>{m.text}</p>
+            {!isReady ? (
+              <div className="flex flex-1 items-center justify-center text-gray-400">
+                <FaSpinner className="animate-spin text-xl mr-2" /> Connecting WebRTC...
+              </div>
+            ) : (
+              <>
+                <div ref={chatRef} className="flex-1 overflow-y-auto p-2 space-y-2">
+                  {messages.map((m, i) => (
+                    <div key={i} className={`p-2 rounded ${m.sender === username ? 'bg-teal-700 self-end' : 'bg-gray-700'}`}>
+                      <p className="text-xs text-gray-300">{m.sender}</p>
+                      <p>{m.text}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="flex p-2 border-t border-gray-700">
-              <input
-                className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
-                placeholder="Type a message..."
-              />
-              <button onClick={sendChatMessage} className="ml-2 p-2 bg-teal-600 rounded">
-                <FaPaperPlane />
-              </button>
-            </div>
+                <div className="flex p-2 border-t border-gray-700">
+                  <input
+                    className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm outline-none"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+                    placeholder="Type a message..."
+                  />
+                  <button onClick={sendChatMessage} className="ml-2 p-2 bg-teal-600 rounded">
+                    <FaPaperPlane />
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
