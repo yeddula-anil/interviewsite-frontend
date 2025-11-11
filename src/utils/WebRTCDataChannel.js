@@ -18,134 +18,92 @@ export function useWebRTCDataChannel(meetingId, username) {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  // --- ICE Config ---
   const RTC_CONFIG = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ],
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
 
-  // --- Send signaling message via STOMP ---
   const sendSignal = useCallback(
-    (payload) => {
+    (type, data) => {
       if (!stompRef.current?.connected) return;
+      const msg = {
+        type,
+        data,
+        sender: nameRef.current,
+        role: 'participant',
+      };
       stompRef.current.publish({
         destination: `/app/signal/${meetingId}`,
-        body: JSON.stringify(payload),
+        body: JSON.stringify(msg),
       });
     },
     [meetingId]
   );
 
-  // --- Create PeerConnection ---
+  const setupDataChannel = (channel) => {
+    dcRef.current = channel;
+    channel.onopen = () => {
+      console.log('🟢 DataChannel connected');
+      setConnected(true);
+    };
+    channel.onclose = () => {
+      console.log('🔴 DataChannel disconnected');
+      setConnected(false);
+    };
+    channel.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'chat') pushMessage({ sender: data.sender, text: data.text });
+        else if (data.type === 'code') setCode(data.code);
+      } catch {
+        pushMessage({ sender: 'remote', text: e.data });
+      }
+    };
+  };
+
   const createPeerConnection = useCallback(() => {
     if (pcRef.current) return pcRef.current;
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendSignal({
-          type: 'candidate',
-          candidate: event.candidate,
-          sender: nameRef.current,
-        });
-      }
+      if (event.candidate) sendSignal('candidate', event.candidate);
     };
-
-    pc.ondatachannel = (event) => {
-      const channel = event.channel;
-      dcRef.current = channel;
-      setupDataChannel(channel);
-    };
+    pc.ondatachannel = (event) => setupDataChannel(event.channel);
 
     pcRef.current = pc;
     return pc;
   }, [sendSignal]);
 
-  // --- DataChannel setup ---
-  const setupDataChannel = (channel) => {
-    channel.onopen = () => {
-      console.log('🟢 DataChannel connected');
-      setConnected(true);
-    };
-
-    channel.onclose = () => {
-      console.log('🔴 DataChannel disconnected');
-      setConnected(false);
-    };
-
-    channel.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'chat') {
-          pushMessage({ sender: data.sender, text: data.text });
-        } else if (data.type === 'code') {
-          setCode(data.code);
-        }
-      } catch {
-        pushMessage({ sender: 'remote', text: event.data });
-      }
-    };
-  };
-
-  // --- Send chat + code ---
-  const sendChat = (text) => {
-    const msg = { type: 'chat', sender: nameRef.current, text };
-    if (dcRef.current?.readyState === 'open') {
-      dcRef.current.send(JSON.stringify(msg));
-    }
-    pushMessage({ sender: nameRef.current, text });
-  };
-
-  const sendCode = (codeValue) => {
-    const msg = { type: 'code', sender: nameRef.current, code: codeValue };
-    if (dcRef.current?.readyState === 'open') {
-      dcRef.current.send(JSON.stringify(msg));
-    }
-  };
-
-  // --- Handle incoming signaling messages ---
   const handleSignal = useCallback(
     async (message) => {
       if (!message.body) return;
       const data = JSON.parse(message.body);
-
-      // Ignore messages from self
       if (data.sender === nameRef.current) return;
 
       const pc = createPeerConnection();
 
-      switch (data.type?.toLowerCase()) {
-        case 'offer': {
-          console.log('📡 Received offer → Sending answer...');
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      switch (data.type) {
+        case 'offer':
+          console.log('📡 Received offer → sending answer...');
+          await pc.setRemoteDescription(new RTCSessionDescription(data.data));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          sendSignal({
-            type: 'answer',
-            sdp: pc.localDescription,
-            sender: nameRef.current,
-          });
+          sendSignal('answer', pc.localDescription);
           break;
-        }
 
-        case 'answer': {
-          console.log('📡 Received answer → Completing connection...');
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        case 'answer':
+          console.log('📡 Received answer → completing connection...');
+          await pc.setRemoteDescription(new RTCSessionDescription(data.data));
           break;
-        }
 
-        case 'candidate': {
+        case 'candidate':
           try {
-            if (data.candidate?.sdpMid && data.candidate?.sdpMLineIndex !== null) {
-              await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            if (data.data?.sdpMid && data.data?.sdpMLineIndex !== null) {
+              await pc.addIceCandidate(new RTCIceCandidate(data.data));
             }
           } catch (err) {
             console.warn('⚠️ Failed to add ICE candidate', err);
           }
           break;
-        }
 
         default:
           break;
@@ -154,25 +112,23 @@ export function useWebRTCDataChannel(meetingId, username) {
     [createPeerConnection, sendSignal]
   );
 
-  // --- Initialize WebRTC + STOMP ---
   useEffect(() => {
     if (!meetingId) return;
 
     (async () => {
       try {
-        // 1️⃣ Join room
         const res = await axiosInstance.post(`/rooms/${meetingId}/join`, {
           name: nameRef.current,
           role: 'participant',
         });
         isOffererRef.current = !!res.data?.isOfferer;
+
         console.log(
           isOffererRef.current
             ? '🟢 Acting as Offerer (first user)'
             : '🟣 Acting as Answerer (second user)'
         );
 
-        // 2️⃣ Connect STOMP
         const stomp = new StompClient({
           webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
           reconnectDelay: 3000,
@@ -184,42 +140,14 @@ export function useWebRTCDataChannel(meetingId, username) {
 
           const pc = createPeerConnection();
 
-          // --- If this user is offerer ---
           if (isOffererRef.current) {
-            console.log('🟢 Acting as Offerer — waiting for second user before sending offer...');
+            console.log('🟢 Creating offer...');
+            const dataChannel = pc.createDataChannel('code-chat');
+            setupDataChannel(dataChannel);
 
-            const checkForSecondUser = async () => {
-              try {
-                const res = await axiosInstance.get(`/rooms`);
-                const roomData = res.data[meetingId];
-                const count = roomData ? Object.keys(roomData).length : 0;
-
-                if (count >= 2) {
-                  console.log('👥 Second participant detected — sending offer now...');
-                  const dataChannel = pc.createDataChannel('code-chat');
-                  setupDataChannel(dataChannel);
-
-                  const offer = await pc.createOffer({
-                    offerToReceiveAudio: false,
-                    offerToReceiveVideo: false,
-                  });
-                  await pc.setLocalDescription(offer);
-
-                  sendSignal({
-                    type: 'offer',
-                    sdp: pc.localDescription,
-                    sender: nameRef.current,
-                  });
-                } else {
-                  setTimeout(checkForSecondUser, 1500);
-                }
-              } catch (err) {
-                console.error('⚠️ Error checking participants:', err);
-                setTimeout(checkForSecondUser, 1500);
-              }
-            };
-
-            checkForSecondUser();
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            sendSignal('offer', pc.localDescription);
           }
         };
 
@@ -230,7 +158,6 @@ export function useWebRTCDataChannel(meetingId, username) {
       }
     })();
 
-    // --- Cleanup on leave ---
     return () => {
       stompRef.current?.deactivate();
       dcRef.current?.close();
@@ -242,6 +169,18 @@ export function useWebRTCDataChannel(meetingId, username) {
       } catch {}
     };
   }, [meetingId, createPeerConnection, handleSignal]);
+
+  const sendChat = (text) => {
+    if (!text.trim()) return;
+    const msg = { type: 'chat', sender: nameRef.current, text };
+    if (dcRef.current?.readyState === 'open') dcRef.current.send(JSON.stringify(msg));
+    pushMessage({ sender: nameRef.current, text });
+  };
+
+  const sendCode = (value) => {
+    const msg = { type: 'code', sender: nameRef.current, code: value };
+    if (dcRef.current?.readyState === 'open') dcRef.current.send(JSON.stringify(msg));
+  };
 
   return { connected, messages, code, setCode, sendChat, sendCode };
 }
