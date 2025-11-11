@@ -140,7 +140,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
     client.onConnect = async () => {
       console.log('✅ Connected to signaling server');
 
-      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/api/rooms/${meetingId}/join`, {
+      const res = await axiosInstance.post(`/rooms/${meetingId}/join`, {
         name: username,
       });
       setIsOfferer(!!res.data.isOfferer);
