@@ -186,21 +186,40 @@ export function useWebRTCDataChannel(meetingId, username) {
 
           // --- If this user is offerer ---
           if (isOffererRef.current) {
-            console.log('📡 Creating and sending offer...');
-            const dataChannel = pc.createDataChannel('code-chat');
-            setupDataChannel(dataChannel);
+            console.log('🟢 Acting as Offerer — waiting for second user before sending offer...');
 
-            const offer = await pc.createOffer({
-              offerToReceiveAudio: false,
-              offerToReceiveVideo: false,
-            });
-            await pc.setLocalDescription(offer);
+            const checkForSecondUser = async () => {
+              try {
+                const res = await axiosInstance.get(`/rooms`);
+                const roomData = res.data[meetingId];
+                const count = roomData ? Object.keys(roomData).length : 0;
 
-            sendSignal({
-              type: 'offer',
-              sdp: pc.localDescription,
-              sender: nameRef.current,
-            });
+                if (count >= 2) {
+                  console.log('👥 Second participant detected — sending offer now...');
+                  const dataChannel = pc.createDataChannel('code-chat');
+                  setupDataChannel(dataChannel);
+
+                  const offer = await pc.createOffer({
+                    offerToReceiveAudio: false,
+                    offerToReceiveVideo: false,
+                  });
+                  await pc.setLocalDescription(offer);
+
+                  sendSignal({
+                    type: 'offer',
+                    sdp: pc.localDescription,
+                    sender: nameRef.current,
+                  });
+                } else {
+                  setTimeout(checkForSecondUser, 1500);
+                }
+              } catch (err) {
+                console.error('⚠️ Error checking participants:', err);
+                setTimeout(checkForSecondUser, 1500);
+              }
+            };
+
+            checkForSecondUser();
           }
         };
 
