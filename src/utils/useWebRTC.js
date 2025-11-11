@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  * - Robust handshake (offer/answer/candidate)
  * - Works with Spring Boot STOMP signaling (/signal/{roomId})
  */
-export function useWebRTCDataChannel({ signaling, isOfferer, onMessage, onConnectionChange }) {
+export function useWebRTC({ signaling, isOfferer, onMessage, onConnectionChange }) {
   const pcRef = useRef(null);
   const dcRef = useRef(null);
 
