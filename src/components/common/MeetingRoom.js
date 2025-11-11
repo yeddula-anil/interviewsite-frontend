@@ -137,9 +137,9 @@ const CallUI = ({ call, meetingId, username, user }) => {
         meetingId,
       });
 
-      if (res.data.matched) {
-        console.log("✅ Matched successfully:", res.data);
-        setIsOfferer(res.data.offerer === username);
+      if (res.data.matched || res.data.isOfferer) {
+        console.log("✅ Match status:", res.data);
+        setIsOfferer(res.data.isOfferer);
       } else {
         console.log("⏳ Waiting for another participant...");
         setTimeout(joinMatchmaking, 2000);
@@ -148,6 +148,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
       console.error("❌ Error joining queue:", err);
     }
   };
+
 
   useEffect(() => {
     if (!meetingId || !username) return;
