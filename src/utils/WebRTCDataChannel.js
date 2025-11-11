@@ -1,186 +1,213 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Client as StompClient } from '@stomp/stompjs';
-import SockJS from 'sockjs-client';
-import axiosInstance from './axiosInstance';
 
-export function useWebRTCDataChannel(meetingId, username) {
+/**
+ * ⚡ useWebRTCDataChannel — Final stable version
+ * - No camera/mic
+ * - Uses only WebRTC DataChannel for code & chat
+ * - Robust handshake (offer/answer/candidate)
+ * - Works with Spring Boot STOMP signaling (/signal/{roomId})
+ */
+export function useWebRTCDataChannel({ signaling, isOfferer, onMessage, onConnectionChange }) {
+  const pcRef = useRef(null);
+  const dcRef = useRef(null);
+
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState([]);
   const [code, setCode] = useState('');
+  const [ready, setReady] = useState(false);
 
-  const pcRef = useRef(null);
-  const dcRef = useRef(null);
-  const stompRef = useRef(null);
-  const isOffererRef = useRef(false);
-  const nameRef = useRef(username || `User-${Math.floor(Math.random() * 9999)}`);
+  const remoteDescSetRef = useRef(false);
+  const candidateQueueRef = useRef([]);
 
+  // Utility to push messages into local state
   const pushMessage = useCallback((msg) => {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  const RTC_CONFIG = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  };
-
-  const sendSignal = useCallback(
+  // Safe send over signaling
+  const safeSend = useCallback(
     (type, data) => {
-      if (!stompRef.current?.connected) return;
-      const msg = {
-        type,
-        data,
-        sender: nameRef.current,
-        role: 'participant',
-      };
-      stompRef.current.publish({
-        destination: `/app/signal/${meetingId}`,
-        body: JSON.stringify(msg),
-      });
+      signaling?.send?.(type, data);
     },
-    [meetingId]
+    [signaling]
   );
 
+  // Setup PeerConnection
+  useEffect(() => {
+    if (pcRef.current) return;
+
+    console.log('🎬 Initializing WebRTC DataChannel...');
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    });
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) safeSend('candidate', event.candidate);
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      console.log('🔗 Connection state:', state);
+      onConnectionChange?.(state);
+      if (state === 'connected') setConnected(true);
+      if (['disconnected', 'failed', 'closed'].includes(state)) setConnected(false);
+    };
+
+    pc.ondatachannel = (event) => {
+      console.log('📡 DataChannel received from remote peer');
+      const channel = event.channel;
+      setupDataChannel(channel);
+    };
+
+    pcRef.current = pc;
+    setReady(true);
+  }, [safeSend, onConnectionChange]);
+
+  // Setup local DataChannel
   const setupDataChannel = (channel) => {
     dcRef.current = channel;
+
     channel.onopen = () => {
       console.log('🟢 DataChannel connected');
       setConnected(true);
     };
+
     channel.onclose = () => {
       console.log('🔴 DataChannel disconnected');
       setConnected(false);
     };
-    channel.onmessage = (e) => {
+
+    channel.onmessage = (event) => {
       try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'chat') pushMessage({ sender: data.sender, text: data.text });
-        else if (data.type === 'code') setCode(data.code);
-      } catch {
-        pushMessage({ sender: 'remote', text: e.data });
+        const data = JSON.parse(event.data);
+        if (data.type === 'chat') {
+          pushMessage({ sender: data.sender, text: data.text });
+        } else if (data.type === 'code') {
+          setCode(data.code);
+        }
+        onMessage?.(data);
+      } catch (err) {
+        pushMessage({ sender: 'remote', text: event.data });
       }
     };
   };
 
-  const createPeerConnection = useCallback(() => {
-    if (pcRef.current) return pcRef.current;
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) sendSignal('candidate', event.candidate);
-    };
-    pc.ondatachannel = (event) => setupDataChannel(event.channel);
-
-    pcRef.current = pc;
-    return pc;
-  }, [sendSignal]);
-
+  // Handle incoming signaling messages
   const handleSignal = useCallback(
-    async (message) => {
-      if (!message.body) return;
-      const data = JSON.parse(message.body);
-      if (data.sender === nameRef.current) return;
+    async ({ type, data }) => {
+      const pc = pcRef.current;
+      if (!pc) return;
 
-      const pc = createPeerConnection();
+      switch ((type || '').toLowerCase()) {
+        case 'offer': {
+          console.log('📩 Offer received');
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          remoteDescSetRef.current = true;
 
-      switch (data.type) {
-        case 'offer':
-          console.log('📡 Received offer → sending answer...');
-          await pc.setRemoteDescription(new RTCSessionDescription(data.data));
+          // flush queued ICE
+          for (const c of candidateQueueRef.current) {
+            try {
+              await pc.addIceCandidate(c);
+            } catch (err) {
+              console.warn('ICE add (queued) failed:', err);
+            }
+          }
+          candidateQueueRef.current = [];
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          sendSignal('answer', pc.localDescription);
+          safeSend('answer', answer);
           break;
+        }
 
-        case 'answer':
-          console.log('📡 Received answer → completing connection...');
-          await pc.setRemoteDescription(new RTCSessionDescription(data.data));
-          break;
+        case 'answer': {
+          console.log('📩 Answer received');
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          remoteDescSetRef.current = true;
 
-        case 'candidate':
-          try {
-            if (data.data?.sdpMid && data.data?.sdpMLineIndex !== null) {
-              await pc.addIceCandidate(new RTCIceCandidate(data.data));
+          for (const c of candidateQueueRef.current) {
+            try {
+              await pc.addIceCandidate(c);
+            } catch (err) {
+              console.warn('ICE add (queued) failed:', err);
             }
-          } catch (err) {
-            console.warn('⚠️ Failed to add ICE candidate', err);
+          }
+          candidateQueueRef.current = [];
+          break;
+        }
+
+        case 'candidate': {
+          const cand = new RTCIceCandidate(data);
+          if (!remoteDescSetRef.current) {
+            candidateQueueRef.current.push(cand);
+            console.log(`🧊 Queued ICE (${candidateQueueRefRef.current.length})`);
+          } else {
+            try {
+              await pc.addIceCandidate(cand);
+            } catch (err) {
+              console.warn('ICE add failed:', err);
+            }
           }
           break;
+        }
 
         default:
-          break;
+          console.log(`ℹ️ Unknown signal type: ${type}`);
       }
     },
-    [createPeerConnection, sendSignal]
+    [safeSend]
   );
 
-  useEffect(() => {
-    if (!meetingId) return;
+  // Start connection if offerer
+  const start = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc || !ready) {
+      console.log('⏳ Waiting for PC readiness...');
+      setTimeout(start, 400);
+      return;
+    }
 
-    (async () => {
-      try {
-        const res = await axiosInstance.post(`/rooms/${meetingId}/join`, {
-          name: nameRef.current,
-          role: 'participant',
-        });
-        isOffererRef.current = !!res.data?.isOfferer;
+    if (!isOfferer) return;
+    if (pc.signalingState !== 'stable') return;
 
-        console.log(
-          isOffererRef.current
-            ? '🟢 Acting as Offerer (first user)'
-            : '🟣 Acting as Answerer (second user)'
-        );
+    console.log('🧠 Creating DataChannel and offer...');
+    const dataChannel = pc.createDataChannel('data');
+    setupDataChannel(dataChannel);
 
-        const stomp = new StompClient({
-          webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
-          reconnectDelay: 3000,
-        });
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    safeSend('offer', offer);
+  }, [isOfferer, ready, safeSend]);
 
-        stomp.onConnect = async () => {
-          console.log('✅ Connected to signaling server');
-          stomp.subscribe(`/topic/signal/${meetingId}`, handleSignal);
-
-          const pc = createPeerConnection();
-
-          if (isOffererRef.current) {
-            console.log('🟢 Creating offer...');
-            const dataChannel = pc.createDataChannel('code-chat');
-            setupDataChannel(dataChannel);
-
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            sendSignal('offer', pc.localDescription);
-          }
-        };
-
-        stomp.activate();
-        stompRef.current = stomp;
-      } catch (err) {
-        console.error('❌ WebRTC init error', err);
-      }
-    })();
-
-    return () => {
-      stompRef.current?.deactivate();
-      dcRef.current?.close();
-      pcRef.current?.close();
-      try {
-        axiosInstance.post(`/rooms/${meetingId}/leave`, {
-          name: nameRef.current,
-        });
-      } catch {}
-    };
-  }, [meetingId, createPeerConnection, handleSignal]);
-
-  const sendChat = (text) => {
-    if (!text.trim()) return;
-    const msg = { type: 'chat', sender: nameRef.current, text };
-    if (dcRef.current?.readyState === 'open') dcRef.current.send(JSON.stringify(msg));
-    pushMessage({ sender: nameRef.current, text });
+  // Senders
+  const sendChat = (text, sender = 'Me') => {
+    const msg = { type: 'chat', sender, text };
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify(msg));
+    }
+    pushMessage({ sender, text });
   };
 
-  const sendCode = (value) => {
-    const msg = { type: 'code', sender: nameRef.current, code: value };
-    if (dcRef.current?.readyState === 'open') dcRef.current.send(JSON.stringify(msg));
+  const sendCode = (newCode, sender = 'Me') => {
+    const msg = { type: 'code', sender, code: newCode };
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify(msg));
+    }
+    setCode(newCode);
   };
 
-  return { connected, messages, code, setCode, sendChat, sendCode };
+  return {
+    connected,
+    handleSignal,
+    start,
+    sendChat,
+    sendCode,
+    messages,
+    code,
+    setCode,
+  };
 }
