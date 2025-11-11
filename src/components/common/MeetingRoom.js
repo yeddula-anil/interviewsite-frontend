@@ -7,6 +7,7 @@ import {
   StreamCall,
   ParticipantView,
   useCallStateHooks,
+  role,
 } from '@stream-io/video-react-sdk';
 import axios from 'axios';
 import {
@@ -19,6 +20,7 @@ import { useWebRTC } from '@/utils/useWebRTC';
 import { Client as StompClient } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import axiosInstance from '@/utils/axiosInstance';
+import toast from 'react-hot-toast';
 const Editor = lazy(() => import('@monaco-editor/react'));
 
 export default function MeetingRoom() {
@@ -128,6 +130,8 @@ const CallUI = ({ call, meetingId, username, user }) => {
   const [stompClient, setStompClient] = useState(null);
   const [isOfferer, setIsOfferer] = useState(null);
   const handleSignalRef = useRef(null);
+  const [showSaveSnackbar, setShowSaveSnackbar] = useState(false);
+
 
   // 🧠 Matchmaking join logic
   const joinMatchmaking = async () => {
@@ -137,13 +141,14 @@ const CallUI = ({ call, meetingId, username, user }) => {
         meetingId,
       });
 
-      if (res.data.matched || res.data.isOfferer) {
-        console.log("✅ Match status:", res.data);
-        setIsOfferer(res.data.isOfferer);
-      } else {
-        console.log("⏳ Waiting for another participant...");
-        setTimeout(joinMatchmaking, 2000);
-      }
+    if (res.data.matched) {
+      console.log("🎯 Matched:", res.data);
+      setIsOfferer(res.data.isOfferer);
+    } else {
+      console.log("🕐 Waiting for another participant...");
+      setTimeout(joinMatchmaking, 2000);
+    }
+
     } catch (err) {
       console.error("❌ Error joining queue:", err);
     }
@@ -206,13 +211,16 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
   handleSignalRef.current = handleSignal;
 
+  const startedRef = useRef(false);
   useEffect(() => {
-    if (stompClient?.connected && isOfferer !== null && !isReady) {
-      console.log('🚀 Matched! Starting WebRTC DataChannel...');
+    if (!startedRef.current && stompClient?.connected && isOfferer !== null) {
+      startedRef.current = true;
+      console.log("🚀 Both participants ready — starting WebRTC...");
       start();
       setTimeout(() => setIsReady(true), 2000);
     }
-  }, [stompClient, isOfferer, start, isReady]);
+  }, [stompClient, isOfferer, start]);
+
 
   const remote = participants.find(p => !p.isLocalParticipant);
   const chatRef = useRef();
@@ -236,7 +244,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
       await call.leave();
       const client = call?.streamClient || call?.client;
       if (client?.disconnectUser) await client.disconnectUser();
-      window.location.href = '/';
+      window.location.href = `/${user?.role.toLowerCase()}/schedule`;
     } catch (err) {
       console.error('⚠️ Error during leave():', err);
     }
@@ -255,20 +263,46 @@ const CallUI = ({ call, meetingId, username, user }) => {
   };
 
   const toggleRec = async () => {
-    if (recording) {
-      await call.stopRecording();
-      setRecording(false);
-      setRecordingBadge(false);
-    } else {
-      if (participants.length < 2) {
-        alert('Recording can start only when both participants are in the meeting!');
-        return;
+    try {
+      if (recording) {
+        await call.stopRecording();
+        setRecording(false);
+        setRecordingBadge(false);
+
+        // 🧠 Show snackbar to ask user
+        setShowSaveSnackbar(true);
+      } else {
+        if (participants.length < 2) {
+          toast.error('Recording can start only when both participants are in the meeting!');
+          return;
+        }
+        await call.startRecording();
+        setRecording(true);
+        setRecordingBadge(true);
       }
-      await call.startRecording();
-      setRecording(true);
-      setRecordingBadge(true);
+    } catch (err) {
+      toast.error("⚠️ Recording error:", err);
     }
   };
+  // 💾 Handle saving the recording to backend
+  const handleSaveRecording = async () => {
+    try {
+      await axiosInstance.post(`/completed-meetings/${meetingId}`);
+      toast.success("✅ Recording saved successfully!");
+    } catch (err) {
+      console.error("❌ Error saving recording:", err);
+      toast.error("⚠️ Failed to save recording.");
+    } finally {
+      setShowSaveSnackbar(false);
+    }
+  };
+  // ⏱️ Auto-hide snackbar after 3 seconds
+  useEffect(() => {
+    if (showSaveSnackbar) {
+      const timer = setTimeout(() => setShowSaveSnackbar(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [showSaveSnackbar]);
 
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
@@ -403,6 +437,27 @@ const CallUI = ({ call, meetingId, username, user }) => {
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>
+      {/* Snackbar for saving recording */}
+      {showSaveSnackbar && (
+        <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-lg shadow-lg flex items-center gap-4 z-50 border border-gray-700">
+          <span>Do you want to save this recorded video?</span>
+          <div className="flex gap-2">
+            <button
+              onClick={handleSaveRecording}
+              className="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1 rounded"
+            >
+              Yes
+            </button>
+            <button
+              onClick={() => setShowSaveSnackbar(false)}
+              className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded"
+            >
+              No
+            </button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
