@@ -109,17 +109,9 @@ export default function MeetingRoom() {
 }
 
 const CallUI = ({ call, meetingId, username, user }) => {
-  const {
-    useParticipants,
-    useLocalParticipant,
-    useCameraState,
-    useMicrophoneState
-  } = useCallStateHooks();
-
+  const { useParticipants, useLocalParticipant } = useCallStateHooks();
   const participants = useParticipants();
   const local = useLocalParticipant();
-  const camState = useCameraState();
-  const micState = useMicrophoneState();
 
   const [editorOpen, setEditorOpen] = useState(true);
   const [editorMax, setEditorMax] = useState(false);
@@ -131,12 +123,11 @@ const CallUI = ({ call, meetingId, username, user }) => {
   const [recordTime, setRecordTime] = useState(0);
   const [recordingBadge, setRecordingBadge] = useState(false);
 
-  // --- WebRTC Data Channel setup ---
+  // 🧠 WebRTC + STOMP setup
   const [stompClient, setStompClient] = useState(null);
   const [isOfferer, setIsOfferer] = useState(false);
   const handleSignalRef = useRef(null);
 
-  // Connect to Spring Boot STOMP
   useEffect(() => {
     if (!meetingId || !username) return;
 
@@ -170,7 +161,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
     };
   }, [meetingId, username]);
 
-  // --- UseWebRTC Hook ---
+  // ✅ Use custom WebRTC hook
   const {
     handleSignal,
     start,
@@ -212,24 +203,13 @@ const CallUI = ({ call, meetingId, username, user }) => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages]);
 
+  // Recording timer
   useEffect(() => {
     let timer;
     if (recording) timer = setInterval(() => setRecordTime(t => t + 1), 1000);
     else setRecordTime(0);
     return () => clearInterval(timer);
   }, [recording]);
-
-  useEffect(() => {
-    const handleDisconnect = async () => {
-      if (recording) {
-        await call.stopRecording();
-        setRecording(false);
-        setRecordingBadge(false);
-      }
-    };
-    call.on('connection.disconnected', handleDisconnect);
-    return () => call.off('connection.disconnected', handleDisconnect);
-  }, [recording, call]);
 
   const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
@@ -242,7 +222,6 @@ const CallUI = ({ call, meetingId, username, user }) => {
       window.location.href = '/';
     } catch (err) {
       console.error('⚠️ Error during leave():', err);
-      window.location.href = `/${user?.role.toLowerCase()}/schedule`;
     }
   };
 
@@ -283,7 +262,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
       <div className="flex-1 flex gap-3 overflow-hidden p-2">
-        {/* --- Code Editor --- */}
+        {/* Code Editor */}
         {editorOpen && (
           <div className={`${editorMax ? 'fixed inset-0 z-50 w-full h-full' : 'w-1/3'}
             bg-gray-800 border border-gray-700 flex flex-col`}>
@@ -311,7 +290,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
           </div>
         )}
 
-        {/* --- Video Section --- */}
+        {/* Video */}
         {!editorMax && (
           <div className="flex-1 bg-black rounded-lg border border-gray-700 relative flex items-center justify-center">
             {remote ? (
@@ -324,9 +303,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
                 {camOn ? (
                   <ParticipantView participant={local} className="w-full h-full" />
                 ) : (
-                  <div className="flex items-center justify-center text-3xl bg-gray-800 text-gray-300">
-                    {username[0]}
-                  </div>
+                  <div className="flex items-center justify-center text-3xl bg-gray-800 text-gray-300">{username[0]}</div>
                 )}
               </div>
             )}
@@ -339,7 +316,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
           </div>
         )}
 
-        {/* --- Chat Panel --- */}
+        {/* Chat */}
         {!editorMax && chatOpen && (
           <div className="w-1/4 bg-gray-800 border border-gray-700 rounded flex flex-col">
             <div className="p-2 bg-gray-700 flex justify-between items-center">
@@ -370,7 +347,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
         )}
       </div>
 
-      {/* --- Bottom Controls --- */}
+      {/* Bottom Controls */}
       <div className="flex justify-between items-center p-3 border-t border-gray-800 bg-gray-900">
         <button onClick={() => setEditorOpen(!editorOpen)} className="bg-gray-800 px-3 py-2 rounded flex gap-2 items-center">
           <FaCode /> {editorOpen ? 'Close Editor' : 'Open Editor'}
