@@ -25,7 +25,7 @@ export default function RecordingsPage() {
     const fetchRecordings = async () => {
       setLoading(true); // start loading
       try {
-        const res = await axiosInstance.get(`/api/completed-meetings/candidate/${user?.email}`);
+        const res = await axiosInstance.get(`/completed-meetings/candidate/${user?.email}`);
         setRecordings(res.data);
       } catch (err) {
         toast.error('Error fetching recordings.');
