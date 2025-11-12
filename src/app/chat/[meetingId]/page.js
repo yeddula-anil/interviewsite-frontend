@@ -4,348 +4,256 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Client as StompClient } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
-import { useAuth } from '@/context/AuthProvider'; // adapt if your auth hook path differs
-
-/**
- * MeetingWebRTC - single-file WebRTC + STOMP chat (DataChannel)
- *
- * Assumptions:
- * - Backend STOMP endpoint available at `${process.env.NEXT_PUBLIC_API_URL}/ws` using SockJS.
- * - Backend REST join endpoint: POST `${process.env.NEXT_PUBLIC_API_URL}/api/rooms/${meetingId}/join`
- *   which returns { isOfferer: boolean, participants, count, ... }
- * - Signaling messages are JSON { type: 'offer'|'answer'|'candidate'|'chat', data: any, sender }
- *
- * Usage: render <MeetingWebRTC /> inside your meeting page. It reads meetingId from route and user from useAuth.
- */
+import axiosInstance from '@/utils/axiosInstance';
+import { useAuth } from '@/context/AuthProvider';
 
 export default function MeetingWebRTC() {
   const { meetingId } = useParams();
-  const { user } = useAuth(); // your existing hook; fallback to prompt if not present
-  const username = user?.username || (typeof window !== 'undefined' ? localStorage.getItem('tempUser') : null);
+  const { user } = useAuth();
+  const username = user?.username || 'Guest' + Math.floor(Math.random() * 10000);
 
-  const [status, setStatus] = useState('idle');
-  const [role, setRole] = useState(null); // 'offerer' | 'answerer'
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState('Initializing...');
+  const [role, setRole] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
-  const [remoteConnected, setRemoteConnected] = useState(false);
+  const [connected, setConnected] = useState(false);
 
   const stompRef = useRef(null);
   const pcRef = useRef(null);
   const dcRef = useRef(null);
-  const remoteCandidatesRef = useRef([]);
-  const isIceGatheringRef = useRef(false);
+  const remoteConnectedRef = useRef(false);
 
-  // STUN servers - public Google and free ones. Adjust as needed.
   const RTC_CONFIG = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      // add TURN if you have one: { urls: 'turn:turn.example.com', username: 'user', credential: 'pass' }
-    ],
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
 
-  // helper: push message
-  const pushMessage = (m) => setMessages((s) => [...s, m]);
+  const pushMessage = (msg) => setMessages((prev) => [...prev, msg]);
 
-  // tiny helper to prompt username if absent (keeps single-file)
-  useEffect(() => {
-    if (!username) {
-      const nm = prompt('Enter name for meeting (temporary)') || `User${Math.floor(Math.random()*9000)+100}`;
-      localStorage.setItem('tempUser', nm);
-      window.location.reload();
-    }
-  }, [username]);
-
-  // Create RTCPeerConnection
   function createPeerConnection() {
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
-    pc.onicecandidate = (e) => {
-      if (!e.candidate) return;
-      // send candidate over STOMP
-      sendSignal('candidate', e.candidate);
+    pc.onicecandidate = (event) => {
+      if (event.candidate) sendSignal('candidate', event.candidate);
     };
 
-    pc.ondatachannel = (ev) => {
-      // answerer will receive the data channel here
-      const ch = ev.channel;
-      dcRef.current = ch;
-      setupDataChannel(ch);
+    pc.ondatachannel = (event) => {
+      const channel = event.channel;
+      dcRef.current = channel;
+      setupDataChannel(channel);
     };
 
     pc.onconnectionstatechange = () => {
-      const st = pc.connectionState || pc.iceConnectionState;
-      console.log('[pc] connection state:', st);
-      if (st === 'connected' || st === 'completed') setRemoteConnected(true);
-      if (st === 'disconnected' || st === 'failed' || st === 'closed') setRemoteConnected(false);
+      const state = pc.connectionState;
+      if (state === 'connected') {
+        remoteConnectedRef.current = true;
+        pushMessage({ sender: 'system', text: 'Connected with peer ✅' });
+      } else if (['disconnected', 'failed', 'closed'].includes(state)) {
+        remoteConnectedRef.current = false;
+        pushMessage({ sender: 'system', text: 'Peer disconnected ⚠️' });
+      }
     };
 
     return pc;
   }
 
-  // Setup event handlers for data channel
-  function setupDataChannel(ch) {
-    ch.onopen = () => {
-      console.log('[dc] open');
-      pushMessage({ sender: 'system', text: 'Data channel open' });
+  function setupDataChannel(channel) {
+    channel.onopen = () => {
+      pushMessage({ sender: 'system', text: 'Chat ready 🎤' });
       setConnected(true);
     };
-    ch.onclose = () => {
-      console.log('[dc] closed');
-      pushMessage({ sender: 'system', text: 'Data channel closed' });
+    channel.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      pushMessage({ sender: data.sender || 'peer', text: data.text });
+    };
+    channel.onclose = () => {
       setConnected(false);
+      pushMessage({ sender: 'system', text: 'Chat closed 🚪' });
     };
-    ch.onmessage = (e) => {
-      try {
-        const parsed = JSON.parse(e.data);
-        if (parsed?.type === 'chat') {
-          pushMessage({ sender: parsed.sender || 'peer', text: parsed.text });
-        } else {
-          // generic payload
-          pushMessage({ sender: 'peer', text: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) });
-        }
-      } catch {
-        pushMessage({ sender: 'peer', text: e.data });
-      }
-    };
-    ch.onerror = (err) => console.error('[dc] error', err);
   }
 
-  // STOMP publish helper
   function sendSignal(type, data) {
     const client = stompRef.current;
-    if (!client || !client.connected) {
-      console.warn('stomp not connected');
-      return;
-    }
-    const payload = {
-      type,
-      data,
-      sender: username,
-    };
+    if (!client || !client.connected) return;
+    const payload = { type, data, sender: username };
     client.publish({
       destination: `/app/signal/${meetingId}`,
       body: JSON.stringify(payload),
     });
   }
 
-  // Handle incoming STOMP signal
   async function handleSignal(msg) {
-    if (!msg) return;
-    let body;
-    try {
-      body = typeof msg === 'string' ? JSON.parse(msg) : msg;
-    } catch (e) {
-      console.warn('invalid signal body', msg);
-      return;
-    }
-    const { type, data, sender } = body;
-    if (sender === username) return; // ignore our own signals
-
-    console.log('[signal] got', type, sender);
-
+    const { type, data, sender } = msg;
+    if (sender === username) return;
     const pc = pcRef.current;
 
     if (type === 'offer') {
-      // answerer: set remote desc and create answer
       await pc.setRemoteDescription(new RTCSessionDescription(data));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendSignal('answer', pc.localDescription);
     } else if (type === 'answer') {
-      // offerer: set remote description
       await pc.setRemoteDescription(new RTCSessionDescription(data));
     } else if (type === 'candidate') {
-      // add ICE candidate (if pc ready)
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data));
       } catch (err) {
-        console.warn('addIceCandidate error', err);
-        // if not ready, store and consume later
-        remoteCandidatesRef.current.push(data);
+        console.error('ICE add error:', err);
       }
     } else if (type === 'chat') {
-      // chat message via signaling (fallback)
-      pushMessage({ sender: sender || 'peer', text: data?.text ?? JSON.stringify(data) });
+      pushMessage({ sender, text: data.text });
     }
   }
 
-  // Create offer flow (offerer)
   async function createAndSendOffer() {
-    const pc = pcRef.current = createPeerConnection();
-
-    // create data channel
+    const pc = (pcRef.current = createPeerConnection());
     const dc = pc.createDataChannel('chat');
     dcRef.current = dc;
     setupDataChannel(dc);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
-    // send via STOMP
     sendSignal('offer', pc.localDescription);
   }
 
-  // Called when we know we are offerer/answerer
-  async function startWebRTC(asOfferer) {
-    setStatus(asOfferer ? 'acting as OFFERER' : 'acting as ANSWERER');
-
-    if (asOfferer) {
-      await createAndSendOffer();
-    } else {
-      // answerer: create pc (ondatachannel will set up data channel)
-      pcRef.current = createPeerConnection();
-      // If any candidates were buffered (unlikely here), try to add later
-    }
+  async function startWebRTC(isOfferer) {
+    setRole(isOfferer ? 'Offerer' : 'Answerer');
+    if (isOfferer) await createAndSendOffer();
+    else pcRef.current = createPeerConnection();
   }
 
-  // Join room and connect STOMP
+  // 🧠 Connect STOMP + Join matchmaking
   useEffect(() => {
     if (!meetingId || !username) return;
 
-    let client = null;
-    let sub = null;
-    let aborted = false;
+    let stompClient;
 
-    async function connectAndJoin() {
-      setStatus('connecting signaling...');
-      client = new StompClient({
-        webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '')}/ws`),
-        reconnectDelay: 2000,
-        // debug: (str) => console.log('[stomp]', str),
+    const connectAndJoin = async () => {
+      setStatus('Connecting signaling...');
+
+      stompClient = new StompClient({
+        webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
+        reconnectDelay: 3000,
       });
 
-      client.onConnect = async () => {
-        console.log('[stomp] connected');
-        setStatus('connected to signaling');
-
-        // subscribe to signals for this meeting
-        sub = client.subscribe(`/topic/signal/${meetingId}`, (m) => {
-          try {
-            const body = JSON.parse(m.body);
-            handleSignal(body);
-          } catch (e) {
-            console.error('failed parse stomp body', e);
-          }
+      stompClient.onConnect = async () => {
+        setStatus('Connected to signaling');
+        stompClient.subscribe(`/topic/signal/${meetingId}`, (msg) => {
+          handleSignal(JSON.parse(msg.body));
         });
 
-        // Now join the room via backend to determine offerer/answerer
         try {
-          setStatus('joining room...');
-          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '')}/api/rooms/${meetingId}/join`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: username }),
-            credentials: 'include',
+          setStatus('Joining matchmaking...');
+          const { data } = await axiosInstance.post(`/matchmaking/join`, {
+            username,
+            meetingId,
           });
 
-          if (!res.ok) {
-            const t = await res.text();
-            throw new Error(`join failed: ${res.status} ${t}`);
+          console.log('[Matchmaking]', data);
+
+          if (data.matched) {
+            pushMessage({
+              sender: 'system',
+              text: `Matched with ${data.isOfferer ? 'Answerer' : 'Offerer'} 🎯`,
+            });
+          } else {
+            pushMessage({ sender: 'system', text: 'Waiting for another participant...' });
           }
 
-          const data = await res.json();
-          console.log('[join] response', data);
-
-          // server's RoomController returns { isOfferer, participants, count }
-          // if it returns isOfferer === true -> create offer; else wait for offer.
-          const isOfferer = !!data.isOfferer;
-          setRole(isOfferer ? 'offerer' : 'answerer');
-
-          // start webRTC flow
-          startWebRTC(isOfferer);
-
+          await startWebRTC(data.isOfferer);
+          setStatus('WebRTC started');
         } catch (err) {
-          console.error('join room error', err);
-          setStatus('failed to join room: ' + (err.message || err));
+          console.error('join failed', err);
+          setStatus('Join failed: ' + (err.response?.data || err.message));
         }
       };
 
-      client.onStompError = (frame) => {
-        console.error('[stomp] error', frame);
-      };
-
-      client.activate();
-      stompRef.current = client;
-    }
+      stompClient.activate();
+      stompRef.current = stompClient;
+    };
 
     connectAndJoin();
 
     return () => {
-      aborted = true;
-      try {
-        // cleanup
-        stompRef.current?.deactivate();
-      } catch {}
-      try {
-        pcRef.current?.close();
-      } catch {}
-      try {
-        dcRef.current?.close();
-      } catch {}
-      stompRef.current = null;
-      pcRef.current = null;
-      dcRef.current = null;
+      stompRef.current?.deactivate();
+      pcRef.current?.close();
+      dcRef.current?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId, username]);
 
-  // convenience: send chat over datachannel (if open), otherwise use signaling fallback
-  function sendChatMessage() {
+  function sendChat() {
     if (!text.trim()) return;
-    const payload = { type: 'chat', sender: username, text: text.trim(), ts: Date.now() };
-    if (dcRef.current && dcRef.current.readyState === 'open') {
-      dcRef.current.send(JSON.stringify(payload));
+    const message = { type: 'chat', sender: username, text: text.trim() };
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify(message));
       pushMessage({ sender: 'me', text: text.trim() });
-      setText('');
-      return;
+    } else {
+      sendSignal('chat', { text: text.trim() });
+      pushMessage({ sender: 'me', text: text.trim() });
     }
-    // fallback: publish via STOMP
-    sendSignal('chat', { text: text.trim() });
-    pushMessage({ sender: 'me', text: text.trim() });
     setText('');
   }
 
   return (
-    <div className="p-3 bg-gray-900 text-white rounded-md max-w-md">
-      <div className="mb-2 text-xs text-gray-300">
-        <strong>Meeting:</strong> {meetingId} &nbsp;|&nbsp; <strong>User:</strong> {username || '—'}
-      </div>
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-6">
+      <div className="max-w-md w-full bg-gray-800/70 border border-gray-700 rounded-xl p-4 shadow-md">
+        <h2 className="text-lg font-semibold text-teal-400 mb-3 text-center">
+          Meeting ID: {meetingId}
+        </h2>
+        <p className="text-gray-300 text-xs text-center mb-3">
+          User: <span className="font-mono text-teal-300">{username}</span>
+        </p>
 
-      <div className="mb-2 text-sm">
-        <span className="inline-block px-2 py-1 rounded bg-gray-800 text-xs mr-2">Status: {status}</span>
-        <span className="inline-block px-2 py-1 rounded bg-gray-800 text-xs">Role: {role || '—'}</span>
-        <span className="inline-block px-2 py-1 rounded bg-gray-800 text-xs ml-2">Remote: {remoteConnected ? 'connected' : '—'}</span>
-      </div>
+        <div className="text-xs text-gray-400 mb-3 text-center">
+          Status: <span className="text-teal-400">{status}</span> | Role:{' '}
+          <span className="text-yellow-400">{role || '—'}</span>
+        </div>
 
-      <div className="border border-gray-700 rounded p-2 mb-2 h-48 overflow-auto bg-black/30">
-        {messages.length === 0 ? (
-          <div className="text-gray-400 text-sm">No messages yet — chat opens when data channel connects.</div>
-        ) : (
-          messages.map((m, i) => (
-            <div key={i} className={`mb-1 ${m.sender === 'me' ? 'text-teal-300' : m.sender === 'system' ? 'text-yellow-300' : 'text-gray-200'}`}>
-              <span className="text-xs text-gray-400">{m.sender}: </span>
-              <span className="text-sm">{m.text}</span>
-            </div>
-          ))
-        )}
-      </div>
+        <div className="border border-gray-700 rounded p-2 h-48 overflow-y-auto bg-black/30 mb-2">
+          {messages.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center mt-16">
+              Waiting for messages...
+            </p>
+          ) : (
+            messages.map((m, i) => (
+              <div
+                key={i}
+                className={`text-sm mb-1 ${
+                  m.sender === 'me'
+                    ? 'text-teal-300 text-right'
+                    : m.sender === 'system'
+                    ? 'text-yellow-400 text-center'
+                    : 'text-gray-200 text-left'
+                }`}
+              >
+                {m.sender !== 'system' && (
+                  <span className="text-gray-500 text-xs">{m.sender}: </span>
+                )}
+                {m.text}
+              </div>
+            ))
+          )}
+        </div>
 
-      <div className="flex gap-2">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
-          placeholder="Type message..."
-          className="flex-1 px-3 py-2 rounded bg-gray-800 border border-gray-700 outline-none text-sm"
-        />
-        <button onClick={sendChatMessage} className="px-3 py-2 rounded bg-teal-600 hover:bg-teal-700 text-sm">
-          Send
-        </button>
-      </div>
-
-      <div className="mt-3 text-xs text-gray-500">
-        Notes: This component handles peer-to-peer signaling over STOMP and a DataChannel for chat.
+        <div className="flex gap-2">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+            placeholder="Type a message..."
+            className="flex-1 px-3 py-2 rounded bg-gray-900 border border-gray-700 outline-none text-sm"
+          />
+          <button
+            onClick={sendChat}
+            disabled={!connected}
+            className={`px-3 py-2 rounded text-sm ${
+              connected
+                ? 'bg-teal-600 hover:bg-teal-700 text-white'
+                : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );
