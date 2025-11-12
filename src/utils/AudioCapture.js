@@ -1,86 +1,108 @@
 // utils/AudioCapture.js
-let mediaRecorderRecruiter = null;
-let mediaRecorderCandidate = null;
-let sendInterval = null;
+import axiosInstance from "@/utils/axiosInstance";
 
-// === START DUAL AUDIO CAPTURE (Recruiter + Candidate) ===
-export const startAudioCapture = async (meetingId) => {
-  console.log("[AudioCapture] Starting dual audio capture");
+let mediaRecorder = null;
+let audioCtx = null;
+let mixedStream = null;
 
-  // Recruiter mic (local)
-  const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-  // Candidate remote audio (from <audio id="remoteAudioElement" />)
-  const remoteAudio = document.querySelector("#remoteAudioElement");
-  const remoteStream = remoteAudio?.srcObject;
-
-  if (!remoteStream) {
-    console.warn("[AudioCapture] Candidate audio not ready yet — retrying in 3s...");
-    setTimeout(() => startAudioCapture(meetingId), 3000);
-    return;
-  }
-
-  // Create recorders
-  const recruiterRecorder = new MediaRecorder(localStream, { mimeType: "audio/webm" });
-  const candidateRecorder = new MediaRecorder(remoteStream, { mimeType: "audio/webm" });
-
-  let recruiterChunks = [];
-  let candidateChunks = [];
-
-  recruiterRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recruiterChunks.push(e.data);
-  };
-  candidateRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) candidateChunks.push(e.data);
-  };
-
-  // Send every 15s
-  sendInterval = setInterval(async () => {
-    if (recruiterChunks.length > 0) {
-      const blob = new Blob(recruiterChunks, { type: "audio/webm" });
-      await sendChunkToBackend(blob, meetingId, "RECRUITER");
-      recruiterChunks = [];
-    }
-    if (candidateChunks.length > 0) {
-      const blob = new Blob(candidateChunks, { type: "audio/webm" });
-      await sendChunkToBackend(blob, meetingId, "candidate");
-      candidateChunks = [];
-    }
-  }, 15000);
-
-  recruiterRecorder.start(3000);
-  candidateRecorder.start(3000);
-
-  mediaRecorderRecruiter = recruiterRecorder;
-  mediaRecorderCandidate = candidateRecorder;
-
-  console.log("[AudioCapture] Recording started for recruiter and candidate");
-};
-
-// === STOP CAPTURE ===
-export const stopAudioCapture = async () => {
-  console.log("[AudioCapture] Stopping all recorders");
-
-  if (mediaRecorderRecruiter?.state !== "inactive") mediaRecorderRecruiter.stop();
-  if (mediaRecorderCandidate?.state !== "inactive") mediaRecorderCandidate.stop();
-  if (sendInterval) clearInterval(sendInterval);
-};
-
-// === SEND TO BACKEND ===
-const sendChunkToBackend = async (blob, meetingId, role) => {
-  const formData = new FormData();
-  formData.append("file", blob, `${role}-${Date.now()}.webm`);
-  formData.append("meetingId", meetingId);
-  formData.append("role", role);
-  formData.append("timestamp", Date.now());
-
+/**
+ * Starts capturing and mixing audio (recruiter + candidate)
+ * Sends chunks to backend every 15 seconds.
+ *
+ * @param {Object} options
+ * @param {string} options.meetingId - Current meeting ID
+ * @param {Array} options.participants - List of Stream participants
+ */
+export const startAudioCapture = async ({ meetingId, participants }) => {
   try {
-    await fetch("http://localhost:8080/api/evaluation/audio", {
-      method: "POST",
-      body: formData,
-    });
-    console.log(`[AudioCapture] Sent chunk (${role})`);
+    console.log("[AudioCapture] 🎧 Starting mixed recording...");
+
+    // 1️⃣ Get recruiter (local) mic audio
+    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // 2️⃣ Get candidate’s remote audio (via Stream.io WebRTC)
+    const remoteStream = new MediaStream();
+    const remoteParticipant = participants.find(p => !p.isLocalParticipant);
+
+    if (remoteParticipant?.audioTrack?.mediaStreamTrack) {
+      remoteStream.addTrack(remoteParticipant.audioTrack.mediaStreamTrack);
+      console.log("[AudioCapture] ✅ Remote track found and added");
+    } else {
+      console.warn("[AudioCapture] ⚠️ Remote track not found — recording mic only");
+    }
+
+    // 3️⃣ Create audio context for mixing
+    audioCtx = new AudioContext();
+    const destination = audioCtx.createMediaStreamDestination();
+
+    const localSource = audioCtx.createMediaStreamSource(localStream);
+    localSource.connect(destination);
+
+    if (remoteStream.getAudioTracks().length > 0) {
+      const remoteSource = audioCtx.createMediaStreamSource(remoteStream);
+      remoteSource.connect(destination);
+    }
+
+    mixedStream = destination.stream;
+
+    // 4️⃣ Create MediaRecorder for the mixed stream
+    mediaRecorder = new MediaRecorder(mixedStream, { mimeType: "audio/webm" });
+
+    // 5️⃣ Send chunks every 15 seconds
+    mediaRecorder.ondataavailable = async (event) => {
+      if (event.data.size > 0) {
+        console.log("[AudioCapture] 📤 Sending audio chunk...");
+        await uploadChunk(event.data, meetingId);
+      }
+    };
+
+    mediaRecorder.start(15000);
+    console.log("[AudioCapture] ⏺️ Mixed audio recording started (every 15s chunk)");
   } catch (err) {
-    console.error("[AudioCapture] Upload failed:", err);
+    console.error("[AudioCapture] ❌ Error starting recording:", err);
   }
 };
+
+/**
+ * Stops the mixed audio recording and releases resources
+ */
+export const stopAudioCapture = async () => {
+  try {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      console.log("[AudioCapture] 🛑 MediaRecorder stopped");
+    }
+
+    if (audioCtx) {
+      await audioCtx.close();
+      console.log("[AudioCapture] 🎚️ AudioContext closed");
+    }
+
+    mediaRecorder = null;
+    audioCtx = null;
+    mixedStream = null;
+  } catch (err) {
+    console.error("[AudioCapture] ❌ Error stopping recording:", err);
+  }
+};
+
+/**
+ * Uploads a single audio chunk to backend
+ * @param {Blob} blob - Audio chunk
+ * @param {string} meetingId - Meeting ID
+ */
+async function uploadChunk(blob, meetingId) {
+  try {
+    const formData = new FormData();
+    formData.append("audio", blob, "chunk.webm");
+    formData.append("meetingId", meetingId);
+
+    await axiosInstance.post("/evaluation/chunk", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+
+    console.log("[AudioCapture] ✅ Chunk uploaded successfully");
+  } catch (err) {
+    console.error("[AudioCapture] ❌ Chunk upload failed:", err);
+  }
+}

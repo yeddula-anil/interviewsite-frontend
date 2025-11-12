@@ -5,144 +5,122 @@ import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash } from 'react-ic
 import { IoMdClose } from 'react-icons/io';
 import { Button } from "@/components/common/Button";
 import { useAuth } from "@/context/AuthProvider";
-
-const MEETING_INFO = {
-  jobTitle: "Frontend Developer",
-  team: "Team Alpha",
-  interviewer: "Sarah Chen",
-  interviewerRole: "Recruiter"
-};
+import axiosInstance from "@/utils/axiosInstance";
 
 const JoinMeetingPage = () => {
   const params = useParams();
   const router = useRouter();
   const { user } = useAuth();
 
-  // support either params.meetingId or params.id depending on route naming
-  const initialMeetingId = String(params?.meetingId ?? params?.id ?? "");
+  const meetingIdParam = String(params?.meetingId ?? params?.id ?? "");
+  const [meetingId, setMeetingId] = useState(meetingIdParam);
 
-  // prefer user.name then fallback to username
-  const initialName = user?.name || user?.username || "";
+  const username = user?.username || "Guest";
+  const role = (user?.role || "").toLowerCase();
+  const [meetingInfo, setMeetingInfo] = useState(null);
 
-  const rolePrefix = (user?.role || "").toLowerCase() === "recruiter" ? "recruiter" : "candidate";
-
-  const [name, setName] = useState(initialName);
-  const [meetingId, setMeetingId] = useState(initialMeetingId);
-  const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
+  // ✅ Initially both off (wait for user permission)
+  const [micOn, setMicOn] = useState(false);
+  const [camOn, setCamOn] = useState(false);
   const [loadingJoin, setLoadingJoin] = useState(false);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // 🎥 Local preview only
+  // ✅ Explicit permission request for mic & camera
   useEffect(() => {
     let active = true;
 
-    const getMedia = async () => {
+    const requestMedia = async () => {
       try {
-        // request both audio & video for preview (user gesture not required for preview in many browsers,
-        // but will prompt permission if not previously granted)
+        // ask for both audio and video permission
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         if (!active) {
-          // if component unmounted, stop tracks immediately
-          stream.getTracks().forEach((t) => t.stop());
+          stream.getTracks().forEach(t => t.stop());
           return;
         }
+
+        // ✅ Set states to true only when permissions are granted successfully
+        setMicOn(true);
+        setCamOn(true);
+
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          // ensure muted (preview) and autoplay playsInline
           videoRef.current.muted = true;
           videoRef.current.playsInline = true;
-          videoRef.current.play().catch(() => {});
+          await videoRef.current.play().catch(() => {});
         }
       } catch (err) {
-        console.error("❌ Cannot access camera/mic:", err);
-        // disable toggles on failure
+        console.error("❌ Camera/mic permission denied or unavailable:", err);
+        // Keep both off if permission denied
         setMicOn(false);
         setCamOn(false);
       }
     };
 
-    getMedia();
-
-    const stopTracks = () => {
-      try {
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        if (videoRef.current) {
-          try { videoRef.current.srcObject = null; } catch (e) {}
-        }
-      } catch (e) {
-        console.warn('stopTracks failed', e);
-      }
-    };
-
-    const handleUnload = () => stopTracks();
-    window.addEventListener("pagehide", handleUnload);
-    window.addEventListener("beforeunload", handleUnload);
+    requestMedia();
 
     return () => {
       active = false;
-      stopTracks();
-      window.removeEventListener("pagehide", handleUnload);
-      window.removeEventListener("beforeunload", handleUnload);
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
     };
   }, []);
+
+  // ✅ Fetch meeting details from backend
+  useEffect(() => {
+    const fetchMeetingInfo = async () => {
+      try {
+        if (!meetingId) return;
+        const res = await axiosInstance.get(`/meetings/${meetingId}`);
+        setMeetingInfo(res.data);
+      } catch (err) {
+        console.error("⚠️ Failed to fetch meeting details:", err);
+      }
+    };
+    fetchMeetingInfo();
+  }, [meetingId]);
 
   const toggleMic = () => {
     const next = !micOn;
     setMicOn(next);
-    try {
-      streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = next));
-    } catch (e) {
-      console.warn('toggleMic failed', e);
-    }
+    streamRef.current?.getAudioTracks().forEach(track => (track.enabled = next));
   };
 
   const toggleCam = () => {
     const next = !camOn;
     setCamOn(next);
-    try {
-      streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
-    } catch (e) {
-      console.warn('toggleCam failed', e);
-    }
+    streamRef.current?.getVideoTracks().forEach(track => (track.enabled = next));
   };
 
-  // 🚀 Proceed to meeting room
   const handleJoin = async () => {
-    if (!name || !meetingId) {
-      alert("Please enter your name and meeting ID.");
+    if (!meetingId) {
+      alert("Please enter the meeting ID.");
       return;
     }
     setLoadingJoin(true);
 
     try {
-      // store prejoin for MeetingRoom to consume
-      sessionStorage.setItem(
-        "prejoin",
-        JSON.stringify({ name, meetingId, micOn, camOn, role: rolePrefix })
-      );
+      // store mic/cam + username in sessionStorage
+      sessionStorage.setItem("prejoin", JSON.stringify({
+        username,
+        meetingId,
+        micOn,
+        camOn,
+        role
+      }));
 
-      // stop preview tracks (we don't want them running while the SDK takes over)
-      try {
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        if (videoRef.current) {
-          try { videoRef.current.srcObject = null; } catch (e) {}
-        }
-      } catch (e) {
-        console.warn('failed to stop preview tracks on join', e);
-      }
+      // stop preview tracks
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
 
-      // navigate to MeetingRoom — IMPORTANT: route must match your MeetingRoom component route
-      // your MeetingRoom code expects param name `meetingId` and route `/meeting/[meetingId]`
-      router.push(`/meetingRoom/${initialMeetingId}`);
+      // navigate to MeetingRoom
+      router.push(`/meetingRoom/${meetingId}`);
     } catch (err) {
       console.error("Join error:", err);
-      alert("Error starting meeting.");
+      alert("Error joining the meeting.");
     } finally {
       setLoadingJoin(false);
     }
@@ -150,14 +128,10 @@ const JoinMeetingPage = () => {
 
   const handleClose = () => {
     try {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
-      if (videoRef.current) {
-        try { videoRef.current.srcObject = null; } catch (e) {}
-      }
-    } catch (e) {
-      console.warn('handleClose cleanup failed', e);
-    }
+      if (videoRef.current) videoRef.current.srcObject = null;
+    } catch (e) {}
     router.push("/");
   };
 
@@ -167,8 +141,7 @@ const JoinMeetingPage = () => {
     return (
       <button
         onClick={onClick}
-        className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-colors border ${colorClass} bg-transparent hover:bg-gray-700/50 cursor-pointer`}
-        aria-pressed={!!active}
+        className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-colors border ${colorClass} hover:bg-gray-700/50`}
       >
         <Icon className="w-5 h-5" />
         <span>{label}</span>
@@ -183,30 +156,20 @@ const JoinMeetingPage = () => {
         <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
           <div>
             <h1 className="text-2xl font-semibold">Join Your Interview</h1>
-            <p className="text-gray-400 text-sm">
-              {MEETING_INFO.jobTitle} · {MEETING_INFO.team} with {MEETING_INFO.interviewer}
-            </p>
+            {meetingInfo ? (
+              <p className="text-gray-400 text-sm">
+                Interview for <span className="font-semibold">{meetingInfo.role}</span> at{" "}
+                <span className="font-semibold">{meetingInfo.companyName}</span>
+              </p>
+            ) : (
+              <p className="text-gray-500 text-sm italic">Loading meeting details...</p>
+            )}
           </div>
           <IoMdClose onClick={handleClose} className="w-6 h-6 text-gray-400 cursor-pointer hover:text-white" />
         </div>
 
         <div className="flex flex-col lg:flex-row gap-6">
           <div className="lg:w-3/4 flex flex-col gap-4">
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Enter your name"
-              className="w-full px-3 py-2 rounded-md bg-gray-700 border border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
-            />
-            <input
-              type="text"
-              value={meetingId}
-              onChange={(e) => setMeetingId(e.target.value)}
-              placeholder="Enter Meeting ID"
-              className="w-full px-3 py-2 rounded-md bg-gray-700 border border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
-            />
-
             <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-700">
               <video
                 ref={videoRef}
@@ -216,7 +179,7 @@ const JoinMeetingPage = () => {
                 className="w-full h-full object-cover transform scale-x-[-1]"
               />
               <div className="absolute bottom-4 left-4 bg-black/50 px-3 py-1 rounded-md text-white text-sm font-medium">
-                {name || "Guest"}
+                {username}
               </div>
             </div>
 
@@ -242,7 +205,7 @@ const JoinMeetingPage = () => {
                 onClick={handleJoin}
                 intent="primary"
                 size="large"
-                disabled={loadingJoin}
+                disabled={loadingJoin || !meetingInfo}
                 className="w-64 py-3 text-lg bg-green-600 hover:bg-green-700"
               >
                 {loadingJoin ? "Connecting..." : "Join Interview Now"}
@@ -256,11 +219,17 @@ const JoinMeetingPage = () => {
           {/* Info Section */}
           <div className="lg:w-1/4 pt-2">
             <h3 className="text-lg font-medium mb-3 text-gray-300">Interview Details</h3>
-            <div className="text-sm text-gray-400 space-y-2">
-              <p>Job Title: {MEETING_INFO.jobTitle}</p>
-              <p>Team: {MEETING_INFO.team}</p>
-              <p>Recruiter: {MEETING_INFO.interviewer}</p>
-            </div>
+            {meetingInfo ? (
+              <div className="text-sm text-gray-400 space-y-2">
+                <p><strong>Recruiter Email:</strong> {meetingInfo.recruiterEmail}</p>
+                <p><strong>Company:</strong> {meetingInfo.companyName}</p>
+                <p><strong>Role:</strong> {meetingInfo.role}</p>
+                <p><strong>Date:</strong> {meetingInfo.date}</p>
+                <p><strong>Time:</strong> {meetingInfo.time}</p>
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm italic">Fetching details...</p>
+            )}
           </div>
         </div>
       </div>

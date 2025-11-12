@@ -1,4 +1,6 @@
 'use client';
+import { startAudioCapture, stopAudioCapture } from "@/utils/AudioCapture";
+
 import React, { useEffect, useState, lazy, Suspense, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import {
@@ -179,6 +181,20 @@ const CallUI = ({ call, meetingId, username, user }) => {
       return false;
     }
   }, []);
+  const [autoScoring, setAutoScoring] = useState(false);
+  //it is related to auto scoring option
+  const toggleAutoScoring = async () => {
+    if (autoScoring) {
+      await stopAudioCapture();
+      setAutoScoring(false);
+      toast("🛑 Auto Scoring Disabled");
+    } else {
+      await startAudioCapture({ meetingId, participants });
+      setAutoScoring(true);
+      toast.success("🧠 Auto Scoring Enabled!");
+    }
+  };
+
 
   // send chat (use DC, fallback to STOMP publish)
   const sendChat = useCallback((text, sender = username) => {
@@ -446,6 +462,10 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
   const leave = async () => {
     try {
+      if (autoScoring) {
+        await stopAudioCapture();
+        setAutoScoring(false);
+      }
       if (recording) await call.stopRecording();
       await call.leave();
       const client = call?.streamClient || call?.client;
@@ -647,7 +667,22 @@ const CallUI = ({ call, meetingId, username, user }) => {
           <button onClick={toggleRec} className={`p-3 rounded-full border ${recording ? 'border-red-500' : 'border-gray-400'}`}>
             {recording ? <FaStop /> : <FaCircle />}
           </button>
+          {/* 🧠 Auto Scoring Button (Recruiter Only) */}
+              {user?.role?.toUpperCase() === "RECRUITER" && (
+                <button
+                  onClick={toggleAutoScoring}
+                  className={`p-3 rounded-full border ${autoScoring ? 'border-green-500' : 'border-gray-400'}`}
+                  title="Toggle Auto Scoring"
+                >
+                  {autoScoring ? (
+                    <span className="text-green-400 font-semibold text-xs">AI ON</span>
+                  ) : (
+                    <span className="text-gray-400 font-semibold text-xs">AI OFF</span>
+                  )}
+                </button>
+              )}
           <button onClick={leave} className="p-3 bg-red-600 rounded-full"><FaPhoneSlash /></button>
+          
         </div>
 
         <button onClick={() => setChatOpen(!chatOpen)} className="bg-gray-800 px-3 py-2 rounded flex gap-2 items-center">
