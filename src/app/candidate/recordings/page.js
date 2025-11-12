@@ -8,45 +8,34 @@ import {
   FaTimes,
 } from 'react-icons/fa';
 import toast from 'react-hot-toast';
+import { useAuth } from '@/context/AuthProvider';
+import axiosInstance from '@/utils/axiosInstance'; // ✅ make sure to import
 
 export default function RecordingsPage() {
   const [recordings, setRecordings] = useState([]);
   const [selectedRecording, setSelectedRecording] = useState(null);
   const [loadingId, setLoadingId] = useState(null);
   const [fetchingVideo, setFetchingVideo] = useState(false);
+  const [loading, setLoading] = useState(true); // ✅ added loading state
+  const { user } = useAuth();
 
   useEffect(() => {
-    // Dummy data (without video URLs yet)
-    setRecordings([
-      {
-        id: 1,
-        meetingId: 'INT-2025-001',
-        candidateEmail: 'john.candidate@example.com',
-        recruiterEmail: 'recruiter.hr@company.com',
-        role: 'Frontend Developer',
-        thumbnail: 'https://placehold.co/280x160?text=Interview+1',
-        date: '2025-11-11 10:30 AM',
-      },
-      {
-        id: 2,
-        meetingId: 'INT-2025-002',
-        candidateEmail: 'sarah.candidate@example.com',
-        recruiterEmail: 'recruiter.tech@company.com',
-        role: 'Backend Engineer',
-        thumbnail: 'https://placehold.co/280x160?text=Interview+2',
-        date: '2025-11-11 2:00 PM',
-      },
-      {
-        id: 3,
-        meetingId: 'INT-2025-003',
-        candidateEmail: 'mike.candidate@example.com',
-        recruiterEmail: 'recruiter@hrdept.com',
-        role: 'Full Stack Developer',
-        thumbnail: 'https://placehold.co/280x160?text=Interview+3',
-        date: '2025-11-10 5:15 PM',
-      },
-    ]);
-  }, []);
+    if (!user) return;
+
+    const fetchRecordings = async () => {
+      setLoading(true); // start loading
+      try {
+        const res = await axiosInstance.get(`/api/completed-meetings/candidate/${user?.email}`);
+        setRecordings(res.data);
+      } catch (err) {
+        toast.error('Error fetching recordings.');
+      } finally {
+        setLoading(false); // stop loading
+      }
+    };
+
+    fetchRecordings();
+  }, [user?.email]);
 
   // 🎥 Fetch Recording from backend
   const handleViewRecording = async (recording) => {
@@ -83,6 +72,15 @@ export default function RecordingsPage() {
     link.click();
     document.body.removeChild(link);
   };
+
+  // 🌀 Loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-300 text-lg">
+        Loading recordings...
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-white px-4 sm:px-8 py-6">
