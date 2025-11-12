@@ -511,7 +511,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
   const handleSaveRecording = async () => {
     try {
-      await axiosInstance.post(`/completed-meetings/${meetingId}`);
+      const res=await axiosInstance.post(`/completed-meetings/${meetingId}`);
       console.log("✅ Save response:", res.data);
       console.log("recording saved successfully",res.data);
       toast.success("✅ Recording saved successfully!");
