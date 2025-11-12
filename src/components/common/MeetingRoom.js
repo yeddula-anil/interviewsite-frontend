@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, lazy, Suspense, useRef } from 'react';
+import React, { useEffect, useState, lazy, Suspense, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import {
   StreamVideoClient,
@@ -7,7 +7,6 @@ import {
   StreamCall,
   ParticipantView,
   useCallStateHooks,
-  role,
 } from '@stream-io/video-react-sdk';
 import axios from 'axios';
 import {
@@ -16,12 +15,25 @@ import {
   FaPaperPlane, FaCircle, FaStop, FaSpinner
 } from 'react-icons/fa';
 import { useAuth } from '@/context/AuthProvider';
-import { useWebRTC } from '@/utils/useWebRTC';
 import { Client as StompClient } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import axiosInstance from '@/utils/axiosInstance';
 import toast from 'react-hot-toast';
 const Editor = lazy(() => import('@monaco-editor/react'));
+
+/**
+ * Single-file MeetingRoom:
+ * - keeps Stream initialization & UI as before
+ * - inlines WebRTC DataChannel + STOMP matchmaking/signaling
+ * - integrates chat + editor sync with DataChannel (fallback to STOMP)
+ *
+ * Notes:
+ * - backend endpoints used:
+ *   POST /api/matchmaking/join  body: { username, meetingId }
+ *   POST /api/matchmaking/leave body: { username }
+ *   POST /completed-meetings/{meetingId} for saving recording
+ * - requires axiosInstance to include credentials/cookies as in your project
+ */
 
 export default function MeetingRoom() {
   const { meetingId } = useParams();
@@ -65,7 +77,7 @@ export default function MeetingRoom() {
         setStatus('✅ Connected to meeting');
       } catch (err) {
         console.error('❌ Stream init error:', err);
-        setError(err.message);
+        setError(err.message || String(err));
         setStatus('❌ Failed to initialize');
       }
     };
@@ -111,11 +123,13 @@ export default function MeetingRoom() {
   );
 }
 
+/* ---------------- Call UI with integrated DataChannel + STOMP + Monaco sync ---------------- */
 const CallUI = ({ call, meetingId, username, user }) => {
   const { useParticipants, useLocalParticipant } = useCallStateHooks();
   const participants = useParticipants();
   const local = useLocalParticipant();
 
+  // existing UI state
   const [editorOpen, setEditorOpen] = useState(true);
   const [editorMax, setEditorMax] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
@@ -127,108 +141,300 @@ const CallUI = ({ call, meetingId, username, user }) => {
   const [recordingBadge, setRecordingBadge] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
-  const [stompClient, setStompClient] = useState(null);
+  // signaling & webrtc state (inlined)
+  const stompRef = useRef(null);
+  const pcRef = useRef(null);
+  const dcRef = useRef(null);
+  const [stompConnected, setStompConnected] = useState(false);
   const [isOfferer, setIsOfferer] = useState(null);
   const handleSignalRef = useRef(null);
+
+  // realtime chat/code state
+  const [messages, setMessages] = useState([]); // {sender, text}
+  const [code, setCode] = useState('// Start coding...');
+  const codeSendDebounceRef = useRef(null);
+
+  // snackbar for recording save
   const [showSaveSnackbar, setShowSaveSnackbar] = useState(false);
 
-
-  // 🧠 Matchmaking join logic
-  const joinMatchmaking = async () => {
-    try {
-      const res = await axiosInstance.post(`/matchmaking/join`, {
-        username,
-        meetingId,
-      });
-
-    if (res.data.matched) {
-      console.log("🎯 Matched:", res.data);
-      setIsOfferer(res.data.isOfferer);
-    } else {
-      console.log("🕐 Waiting for another participant...");
-      setTimeout(joinMatchmaking, 2000);
-    }
-
-    } catch (err) {
-      console.error("❌ Error joining queue:", err);
-    }
+  // small peer config (no TURN). Add TURN if needed in production.
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+    ],
   };
 
+  /* -------------------- DataChannel helpers -------------------- */
+  const pushMessage = useCallback((m) => setMessages(prev => [...prev, m]), []);
+  const sendOverDataChannel = useCallback((payload) => {
+    try {
+      const ch = dcRef.current;
+      if (ch && ch.readyState === 'open') {
+        ch.send(JSON.stringify(payload));
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.warn('dc send failed', err);
+      return false;
+    }
+  }, []);
 
+  // send chat (use DC, fallback to STOMP publish)
+  const sendChat = useCallback((text, sender = username) => {
+    const payload = { type: 'chat', sender, text, ts: Date.now() };
+    const ok = sendOverDataChannel(payload);
+    if (!ok) {
+      // fallback publish via STOMP
+      if (stompRef.current?.connected) {
+        stompRef.current.publish({
+          destination: `/app/signal/${meetingId}`,
+          body: JSON.stringify({ type: 'chat', data: { text }, sender }),
+        });
+      }
+    }
+    pushMessage({ sender: 'me', text });
+  }, [sendOverDataChannel, meetingId, username, pushMessage]);
+
+  // send code (debounced)
+  const sendCode = useCallback((newCode) => {
+    // debounce rapid keystrokes
+    if (codeSendDebounceRef.current) clearTimeout(codeSendDebounceRef.current);
+    codeSendDebounceRef.current = setTimeout(() => {
+      const payload = { type: 'code', sender: username, data: { code: newCode }, ts: Date.now() };
+      const ok = sendOverDataChannel(payload);
+      if (!ok && stompRef.current?.connected) {
+        stompRef.current.publish({
+          destination: `/app/signal/${meetingId}`,
+          body: JSON.stringify(payload),
+        });
+      }
+    }, 200); // 200ms debounce
+  }, [sendOverDataChannel, meetingId, username]);
+
+  /* -------------------- RTC / signaling -------------------- */
+  // create RTCPeerConnection with handlers
+  function createPeerConnection() {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate && stompRef.current?.connected) {
+        stompRef.current.publish({
+          destination: `/app/signal/${meetingId}`,
+          body: JSON.stringify({ type: 'candidate', data: ev.candidate, sender: username }),
+        });
+      }
+    };
+
+    pc.ondatachannel = (ev) => {
+      // answerer receives channel here
+      const ch = ev.channel;
+      dcRef.current = ch;
+      setupDataChannel(ch);
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState || pc.iceConnectionState;
+      console.log('[pc] state', state);
+    };
+
+    return pc;
+  }
+
+  function setupDataChannel(ch) {
+    ch.onopen = () => {
+      console.log('DataChannel open');
+      pushMessage({ sender: 'system', text: 'Data channel open' });
+    };
+    ch.onclose = () => {
+      console.log('DataChannel closed');
+      pushMessage({ sender: 'system', text: 'Data channel closed' });
+    };
+    ch.onerror = (err) => {
+      console.error('DataChannel error', err);
+    };
+    ch.onmessage = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.data);
+        if (parsed.type === 'chat') {
+          pushMessage({ sender: parsed.sender || 'peer', text: parsed.text });
+        } else if (parsed.type === 'code') {
+          // update code without echoing back
+          if (typeof parsed.data?.code === 'string') {
+            setCode(parsed.data.code);
+          }
+        } else {
+          // generic
+          pushMessage({ sender: parsed.sender || 'peer', text: parsed.text || JSON.stringify(parsed) });
+        }
+      } catch (err) {
+        console.warn('failed parse dc message', err);
+      }
+    };
+  }
+
+  // handle incoming STOMP signal object (already parsed)
+  async function handleSignal(msg) {
+    if (!msg) return;
+    const { type, data, sender } = msg;
+    if (sender === username) return; // ignore own
+
+    // ensure PC exists
+    if (!pcRef.current) pcRef.current = createPeerConnection();
+
+    const pc = pcRef.current;
+
+    try {
+      if (type === 'offer') {
+        // Answerer flow: set remote, create answer
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        stompRef.current.publish({
+          destination: `/app/signal/${meetingId}`,
+          body: JSON.stringify({ type: 'answer', data: pc.localDescription, sender: username }),
+        });
+      } else if (type === 'answer') {
+        // Offerer receives answer
+        await pc.setRemoteDescription(new RTCSessionDescription(data));
+      } else if (type === 'candidate') {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data));
+        } catch (err) {
+          console.warn('addIceCandidate error (buffering maybe)', err);
+        }
+      } else if (type === 'chat') {
+        pushMessage({ sender: sender || 'peer', text: data?.text ?? JSON.stringify(data) });
+      } else if (type === 'code') {
+        if (data?.code) setCode(data.code);
+      }
+    } catch (err) {
+      console.error('handleSignal error', err);
+    }
+  }
+
+  // create offer (offerer)
+  async function createAndSendOffer() {
+    pcRef.current = createPeerConnection();
+    // create data channel
+    const ch = pcRef.current.createDataChannel('chat');
+    dcRef.current = ch;
+    setupDataChannel(ch);
+
+    const offer = await pcRef.current.createOffer();
+    await pcRef.current.setLocalDescription(offer);
+
+    // send offer
+    stompRef.current.publish({
+      destination: `/app/signal/${meetingId}`,
+      body: JSON.stringify({ type: 'offer', data: pcRef.current.localDescription, sender: username }),
+    });
+  }
+
+  // start webRTC flow once isOfferer known & stomp connected
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (!stompConnected) return;
+    if (isOfferer === null) return;
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    (async () => {
+      try {
+        if (isOfferer) {
+          await createAndSendOffer();
+        } else {
+          // answerer: create pc and wait for ondatachannel
+          pcRef.current = createPeerConnection();
+        }
+        // mark ready after small delay
+        setTimeout(() => setIsReady(true), 1000);
+      } catch (err) {
+        console.error('start webrtc error', err);
+      }
+    })();
+  }, [stompConnected, isOfferer]);
+
+  /* -------------------- Matchmaking + STOMP connect -------------------- */
   useEffect(() => {
     if (!meetingId || !username) return;
 
-    const client = new StompClient({
-      webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
-      reconnectDelay: 2000,
-    });
+    let client = null;
+    let sub = null;
+    let alive = true;
 
-    client.onConnect = async () => {
-      console.log('✅ Connected to signaling server');
-      await joinMatchmaking(); // Wait until paired
-
-      client.subscribe(`/topic/signal/${meetingId}`, (msg) => {
-        const data = JSON.parse(msg.body);
-        if (data.sender !== username) {
-          handleSignalRef.current?.(data);
-        }
+    const connect = async () => {
+      client = new StompClient({
+        webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
+        reconnectDelay: 2000,
       });
+
+      client.onConnect = async () => {
+        console.log('✅ Connected to signaling server');
+        setStompConnected(true);
+        stompRef.current = client;
+
+        // subscribe to signals
+        sub = client.subscribe(`/topic/signal/${meetingId}`, (m) => {
+          try {
+            const body = JSON.parse(m.body);
+            handleSignal(body);
+          } catch (err) {
+            console.error('stomp parse error', err);
+          }
+        });
+
+        // call matchmaking endpoint to decide offerer
+        try {
+          const res = await axiosInstance.post(`/matchmaking/join`, { username, meetingId });
+          const data = res.data;
+          console.log('🎯 Matchmaking response:', data);
+
+          // server returns isOfferer boolean (true for first user)
+          if (typeof data.isOfferer !== 'undefined') {
+            setIsOfferer(!!data.isOfferer);
+          } else if (data.matched) {
+            // older variant: if matched true and isOfferer false, set accordingly
+            setIsOfferer(!!data.isOfferer);
+          } else {
+            // if server says waiting, poll until matched (simple)
+            const poll = async () => {
+              if (!alive) return;
+              const r = await axiosInstance.post(`/matchmaking/join`, { username, meetingId });
+              if (r.data && (r.data.matched || typeof r.data.isOfferer !== 'undefined')) {
+                setIsOfferer(!!r.data.isOfferer);
+                return;
+              }
+              setTimeout(poll, 1500);
+            };
+            setTimeout(poll, 1500);
+          }
+        } catch (err) {
+          console.error('matchmaking join error', err);
+        }
+      };
+
+      client.onStompError = (frame) => {
+        console.error('STOMP error', frame);
+      };
+
+      client.activate();
     };
 
-    client.activate();
-    setStompClient(client);
+    connect();
 
     return () => {
-      client.deactivate();
-      axiosInstance.post(`/matchmaking/leave`, { username });
+      alive = false;
+      try { stompRef.current?.deactivate(); } catch {}
+      try { pcRef.current?.close(); } catch {}
+      try { dcRef.current?.close(); } catch {}
+      // call leave to remove from server waiting list
+      try { axiosInstance.post('/matchmaking/leave', { username, meetingId }).catch(()=>{}) } catch {}
+      stompRef.current = null;
     };
   }, [meetingId, username]);
 
-  const {
-    handleSignal,
-    start,
-    messages,
-    sendChat,
-    code,
-    sendCode,
-    setCode,
-  } = useWebRTC({
-    signaling: {
-      send: (type, data) => {
-        if (!stompClient?.connected) return;
-        stompClient.publish({
-          destination: `/app/signal/${meetingId}`,
-          body: JSON.stringify({
-            type,
-            data,
-            sender: username,
-          }),
-        });
-      },
-    },
-    isOfferer,
-  });
-
-  handleSignalRef.current = handleSignal;
-
-  const startedRef = useRef(false);
-  useEffect(() => {
-    if (!startedRef.current && stompClient?.connected && isOfferer !== null) {
-      startedRef.current = true;
-      console.log("🚀 Both participants ready — starting WebRTC...");
-      start();
-      setTimeout(() => setIsReady(true), 2000);
-    }
-  }, [stompClient, isOfferer, start]);
-
-
-  const remote = participants.find(p => !p.isLocalParticipant);
-  const chatRef = useRef();
-
-  useEffect(() => {
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [messages]);
-
+  /* -------------------- Recording controls (kept unchanged) -------------------- */
   useEffect(() => {
     let timer;
     if (recording) timer = setInterval(() => setRecordTime(t => t + 1), 1000);
@@ -244,7 +450,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
       await call.leave();
       const client = call?.streamClient || call?.client;
       if (client?.disconnectUser) await client.disconnectUser();
-      window.location.href = `/${user?.role.toLowerCase()}/schedule`;
+      window.location.href = `/${user?.role?.toLowerCase() || 'user'}/schedule`;
     } catch (err) {
       console.error('⚠️ Error during leave():', err);
     }
@@ -268,8 +474,6 @@ const CallUI = ({ call, meetingId, username, user }) => {
         await call.stopRecording();
         setRecording(false);
         setRecordingBadge(false);
-
-        // 🧠 Show snackbar to ask user
         setShowSaveSnackbar(true);
       } else {
         if (participants.length < 2) {
@@ -281,10 +485,10 @@ const CallUI = ({ call, meetingId, username, user }) => {
         setRecordingBadge(true);
       }
     } catch (err) {
-      toast.error("⚠️ Recording error:", err);
+      toast.error("⚠️ Recording error: " + (err?.message || String(err)));
     }
   };
-  // 💾 Handle saving the recording to backend
+
   const handleSaveRecording = async () => {
     try {
       await axiosInstance.post(`/completed-meetings/${meetingId}`);
@@ -296,19 +500,35 @@ const CallUI = ({ call, meetingId, username, user }) => {
       setShowSaveSnackbar(false);
     }
   };
-  // ⏱️ Auto-hide snackbar after 3 seconds
+
+  // auto-hide snackbar
   useEffect(() => {
     if (showSaveSnackbar) {
-      const timer = setTimeout(() => setShowSaveSnackbar(false), 3000);
-      return () => clearTimeout(timer);
+      const t = setTimeout(() => setShowSaveSnackbar(false), 3000);
+      return () => clearTimeout(t);
     }
   }, [showSaveSnackbar]);
 
+  /* -------------------- Editor & Chat UI callbacks -------------------- */
+  const handleEditorChange = (v) => {
+    setCode(v ?? '');
+    sendCode(v ?? '');
+  };
+
   const sendChatMessage = () => {
     if (!chatInput.trim()) return;
-    sendChat(chatInput, username);
+    sendChat(chatInput.trim(), username);
     setChatInput('');
   };
+
+  // keep the chat scroll in view (simple)
+  const chatRef = useRef();
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  }, [messages]);
+
+  /* -------------------- Render UI (kept same as before, wired chat/editor to local state) -------------------- */
+  const remote = participants.find(p => !p.isLocalParticipant);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
@@ -338,10 +558,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
                   height="100%"
                   theme="vs-dark"
                   value={code}
-                  onChange={(v) => {
-                    setCode(v);
-                    sendCode(v);
-                  }}
+                  onChange={handleEditorChange}
                   options={{ fontSize: 14, minimap: { enabled: false } }}
                 />
               </Suspense>
@@ -437,6 +654,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
           <FaComments /> {chatOpen ? 'Close Chat' : 'Open Chat'}
         </button>
       </div>
+
       {/* Snackbar for saving recording */}
       {showSaveSnackbar && (
         <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-5 py-3 rounded-lg shadow-lg flex items-center gap-4 z-50 border border-gray-700">
