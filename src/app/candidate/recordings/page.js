@@ -1,4 +1,5 @@
 'use client';
+import axios from 'axios';
 import React, { useEffect, useState } from 'react';
 import {
   FaUserTie,
@@ -40,21 +41,44 @@ export default function RecordingsPage() {
   }, [user?.email]);
 
   // 🎥 Fetch Recording from backend
-  const handleViewRecording = async (recording) => {
+    const handleViewRecording = async (recording) => {
     setLoadingId(recording.id);
     setFetchingVideo(true);
-    try {
-      const res = await fetch(`/api/recordings/${recording.meetingId}`);
-      if (!res.ok) throw new Error('Failed to fetch recording from Stream');
-      const data = await res.json();
 
-      if (data.recordingUrl) {
-        setSelectedRecording({ ...recording, videoUrl: data.recordingUrl });
+    try {
+      // 1️⃣ Get a Stream token for the current user
+      const tokenRes = await axios.get(`/api/stream/token?user_id=${user.id}`);
+      const token = tokenRes.data?.token;
+      console.log("token generated");
+      console.log(token);
+
+      if (!token) {
+        toast.error("Failed to generate Stream token.");
+        throw new Error("Stream token missing");
+      }
+
+      // 2️⃣ Use that token + user_id to call your recordings API
+      const res = await axios.get(
+        `/api/recordings/${recording.meetingId}?token=${encodeURIComponent(token)}`
+      );
+
+      // 3️⃣ Handle success
+      if (res.data?.recordingUrl) {
+        setSelectedRecording({
+          ...recording,
+          videoUrl: res.data.recordingUrl,
+        });
+        toast.success("Recording loaded successfully!");
       } else {
-        toast.error('No recording found for this meeting.');
+        toast.error("No recording found for this meeting.");
       }
     } catch (err) {
-      toast.error('Error loading recording.');
+      console.error("❌ Error fetching recording:", err);
+      const message =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        "Error loading recording.";
+      toast.error(message);
     } finally {
       setFetchingVideo(false);
       setLoadingId(null);

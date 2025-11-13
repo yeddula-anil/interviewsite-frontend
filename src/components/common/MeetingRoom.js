@@ -1,5 +1,6 @@
 'use client';
 import { startAudioCapture, stopAudioCapture } from "@/utils/AudioCapture";
+import useAntiCheat from "@/hooks/useAntiCheat";
 
 import React, { useEffect, useState, lazy, Suspense, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
@@ -142,6 +143,8 @@ const CallUI = ({ call, meetingId, username, user }) => {
   const [recordTime, setRecordTime] = useState(0);
   const [recordingBadge, setRecordingBadge] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [cheatAlerts, setCheatAlerts] = useState([]);
+
 
   // signaling & webrtc state (inlined)
   const stompRef = useRef(null);
@@ -194,6 +197,24 @@ const CallUI = ({ call, meetingId, username, user }) => {
       toast.success("🧠 Auto Scoring Enabled!");
     }
   };
+  const sendCheatAlert = (msg) => {
+    const payload = {
+      type: "anti-cheat",
+      sender: username,
+      role: user.role,
+      data: { msg },
+      ts: Date.now()
+    };
+    const ok = sendOverDataChannel(payload);
+    if (!ok && stompRef.current?.connected) {
+      stompRef.current.publish({
+        destination: `/app/signal/${meetingId}`,
+        body: JSON.stringify(payload),
+      });
+    }
+  };
+
+
 
 
   // send chat (use DC, fallback to STOMP publish)
@@ -274,7 +295,11 @@ const CallUI = ({ call, meetingId, username, user }) => {
         const parsed = JSON.parse(ev.data);
         if (parsed.type === 'chat') {
           pushMessage({ sender: parsed.sender || 'peer', text: parsed.text });
-        } else if (parsed.type === 'code') {
+        } 
+        else if (parsed.type === "anti-cheat") {
+            toast.error(`⚠️ Illegal Activity detected: ${parsed.data.msg}`);
+        }
+        else if (parsed.type === 'code') {
           // update code without echoing back
           if (typeof parsed.data?.code === 'string') {
             setCode(parsed.data.code);
@@ -324,6 +349,10 @@ const CallUI = ({ call, meetingId, username, user }) => {
       } else if (type === 'code') {
         if (data?.code) setCode(data.code);
       }
+      else if (type === "anti-cheat") {
+          toast.error(`⚠️ Illegal Activity detected: ${data?.msg}`);
+      }
+
     } catch (err) {
       console.error('handleSignal error', err);
     }
@@ -552,6 +581,8 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
   /* -------------------- Render UI (kept same as before, wired chat/editor to local state) -------------------- */
   const remote = participants.find(p => !p.isLocalParticipant);
+
+  useAntiCheat(user.role, username, sendCheatAlert);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col overflow-hidden">

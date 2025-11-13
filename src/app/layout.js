@@ -1,5 +1,7 @@
+
 import { Geist, Geist_Mono } from "next/font/google";
 import '@stream-io/video-react-sdk/dist/css/styles.css';
+
 
 import "./globals.css";
 import { PreJoinProvider } from "@/context/PreJoinContext"; // <-- import here
@@ -22,6 +24,7 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
+ 
   return (
     <html lang="en">
       <body

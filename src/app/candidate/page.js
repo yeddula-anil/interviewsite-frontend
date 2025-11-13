@@ -1,7 +1,10 @@
+'use client'
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/common/Button";
 
+
 export default function Dashboard() {
+ 
   return (
     <div className="p-8 space-y-8 bg-gray-50 min-h-screen">
       <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
