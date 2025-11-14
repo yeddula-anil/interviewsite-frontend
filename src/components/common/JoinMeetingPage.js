@@ -1,9 +1,13 @@
 'use client';
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { FaMicrophone, FaMicrophoneSlash, FaVideo, FaVideoSlash } from 'react-icons/fa';
-import { IoMdClose } from 'react-icons/io';
-import { Button } from "@/components/common/Button";
+import {
+  FaMicrophone,
+  FaMicrophoneSlash,
+  FaVideo,
+  FaVideoSlash,
+} from "react-icons/fa";
+import { IoMdClose } from "react-icons/io";
 import { useAuth } from "@/context/AuthProvider";
 import axiosInstance from "@/utils/axiosInstance";
 
@@ -12,14 +16,10 @@ const JoinMeetingPage = () => {
   const router = useRouter();
   const { user } = useAuth();
 
-  const meetingIdParam = String(params?.meetingId ?? params?.id ?? "");
-  const [meetingId, setMeetingId] = useState(meetingIdParam);
-
+  const meetingId = String(params?.meetingId ?? params?.id ?? "");
   const username = user?.username || "Guest";
-  const role = (user?.role || "").toLowerCase();
-  const [meetingInfo, setMeetingInfo] = useState(null);
 
-  // ✅ Initially both off (wait for user permission)
+  const [meetingInfo, setMeetingInfo] = useState(null);
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
   const [loadingJoin, setLoadingJoin] = useState(false);
@@ -27,200 +27,111 @@ const JoinMeetingPage = () => {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // ✅ Explicit permission request for mic & camera
+  // === CAMERA + MIC PERMISSIONS ===
   useEffect(() => {
-    let active = true;
-
     const requestMedia = async () => {
       try {
-        // ask for both audio and video permission
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        if (!active) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
 
-        // ✅ Set states to true only when permissions are granted successfully
+        streamRef.current = stream;
         setMicOn(true);
         setCamOn(true);
 
-        streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.muted = true;
-          videoRef.current.playsInline = true;
-          await videoRef.current.play().catch(() => {});
+          videoRef.current.play().catch(() => {});
         }
       } catch (err) {
-        console.error("❌ Camera/mic permission denied or unavailable:", err);
-        // Keep both off if permission denied
-        setMicOn(false);
-        setCamOn(false);
+        console.error("Permission denied:", err);
       }
     };
-
     requestMedia();
 
     return () => {
-      active = false;
-      streamRef.current?.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      if (videoRef.current) videoRef.current.srcObject = null;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
-  // ✅ Fetch meeting details from backend
+  // === FETCH MEETING DETAILS ===
   useEffect(() => {
-    const fetchMeetingInfo = async () => {
+    const fetchMeeting = async () => {
       try {
-        if (!meetingId) return;
         const res = await axiosInstance.get(`/meetings/${meetingId}`);
         setMeetingInfo(res.data);
-      } catch (err) {
-        console.error("⚠️ Failed to fetch meeting details:", err);
+        
+      } catch (e) {
+        console.error(e);
       }
     };
-    fetchMeetingInfo();
+    fetchMeeting();
+    sessionStorage.setItem("resumeUrl",meetingInfo?.candidateResumeUrl)
   }, [meetingId]);
 
   const toggleMic = () => {
     const next = !micOn;
     setMicOn(next);
-    streamRef.current?.getAudioTracks().forEach(track => (track.enabled = next));
+    streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = next));
   };
 
   const toggleCam = () => {
     const next = !camOn;
     setCamOn(next);
-    streamRef.current?.getVideoTracks().forEach(track => (track.enabled = next));
+    streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
   };
 
   const handleJoin = async () => {
-    if (!meetingId) {
-      alert("Please enter the meeting ID.");
-      return;
-    }
     setLoadingJoin(true);
 
-    try {
-      // store mic/cam + username in sessionStorage
-      sessionStorage.setItem("prejoin", JSON.stringify({
+    sessionStorage.setItem(
+      "prejoin",
+      JSON.stringify({
         username,
         meetingId,
         micOn,
         camOn,
-        role
-      }));
-
-      // stop preview tracks
-      streamRef.current?.getTracks().forEach(track => track.stop());
-      if (videoRef.current) videoRef.current.srcObject = null;
-
-      // navigate to MeetingRoom
-      router.push(`/meetingRoom/${meetingId}`);
-    } catch (err) {
-      console.error("Join error:", err);
-      alert("Error joining the meeting.");
-    } finally {
-      setLoadingJoin(false);
-    }
-  };
-
-  const handleClose = () => {
-    try {
-      streamRef.current?.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      if (videoRef.current) videoRef.current.srcObject = null;
-    } catch (e) {}
-    router.push("/");
-  };
-
-  const ControlButton = ({ active, onClick, activeIcon: ActiveIcon, inactiveIcon: InactiveIcon, label }) => {
-    const Icon = active ? ActiveIcon : InactiveIcon;
-    const colorClass = active ? "text-teal-400 border-teal-400" : "text-red-500 border-red-500";
-    return (
-      <button
-        onClick={onClick}
-        className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-colors border ${colorClass} hover:bg-gray-700/50`}
-      >
-        <Icon className="w-5 h-5" />
-        <span>{label}</span>
-      </button>
+      })
     );
+
+    // IMPORTANT: do NOT turn off loading — let route unmount the page
+    router.push(`/meetingRoom/${meetingId}`);
   };
 
   return (
-    <div className="min-h-screen w-full bg-gray-900 text-white flex items-center justify-center p-4">
-      <div className="max-w-4xl w-full bg-gray-800 rounded-xl shadow-2xl p-6 relative">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
-          <div>
-            <h1 className="text-2xl font-semibold">Join Your Interview</h1>
-            {meetingInfo ? (
-              <p className="text-gray-400 text-sm">
-                Interview for <span className="font-semibold">{meetingInfo.role}</span> at{" "}
-                <span className="font-semibold">{meetingInfo.companyName}</span>
-              </p>
-            ) : (
-              <p className="text-gray-500 text-sm italic">Loading meeting details...</p>
-            )}
-          </div>
-          <IoMdClose onClick={handleClose} className="w-6 h-6 text-gray-400 cursor-pointer hover:text-white" />
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#051B21] to-[#0D1114] text-white p-8">
+
+      {/* CARD */}
+      <div className="max-w-7xl mx-auto p-8 rounded-3xl 
+          bg-white/5 backdrop-blur-xl border border-white/10 
+          shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+
+        {/* HEADER (CENTERED TITLE + CLOSE BUTTON RIGHT) */}
+        <div className="relative flex justify-center items-center mb-8">
+
+          <h1 className="text-3xl font-semibold bg-gradient-to-r from-[#38f2b9] to-white bg-clip-text text-transparent">
+            Join Your Interview
+          </h1>
+
+          <IoMdClose
+            className="absolute right-0 w-7 h-7 text-gray-300 hover:text-white cursor-pointer"
+            onClick={() => router.push("/")}
+          />
         </div>
 
-        <div className="flex flex-col lg:flex-row gap-6">
-          <div className="lg:w-3/4 flex flex-col gap-4">
-            <div className="relative bg-black aspect-video rounded-lg overflow-hidden border border-gray-700">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover transform scale-x-[-1]"
-              />
-              <div className="absolute bottom-4 left-4 bg-black/50 px-3 py-1 rounded-md text-white text-sm font-medium">
-                {username}
-              </div>
-            </div>
+        {/* GRID LAYOUT */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
 
-            <div className="flex justify-center items-center space-x-6 mt-4">
-              <ControlButton
-                active={micOn}
-                onClick={toggleMic}
-                activeIcon={FaMicrophone}
-                inactiveIcon={FaMicrophoneSlash}
-                label={`Mic: ${micOn ? "On" : "Off"}`}
-              />
-              <ControlButton
-                active={camOn}
-                onClick={toggleCam}
-                activeIcon={FaVideo}
-                inactiveIcon={FaVideoSlash}
-                label={`Cam: ${camOn ? "On" : "Off"}`}
-              />
-            </div>
+          {/* LEFT — MEETING DETAILS */}
+          <div className="lg:col-span-1">
+            <h2 className="text-xl font-semibold text-[#38f2b9] mb-4">
+              Interview Details
+            </h2>
 
-            <div className="mt-6 flex flex-col items-center">
-              <Button
-                onClick={handleJoin}
-                intent="primary"
-                size="large"
-                disabled={loadingJoin || !meetingInfo}
-                className="w-64 py-3 text-lg bg-green-600 hover:bg-green-700"
-              >
-                {loadingJoin ? "Connecting..." : "Join Interview Now"}
-              </Button>
-              <p className="text-xs text-gray-500 mt-2">
-                By clicking join, you agree to the company's privacy policy.
-              </p>
-            </div>
-          </div>
-
-          {/* Info Section */}
-          <div className="lg:w-1/4 pt-2">
-            <h3 className="text-lg font-medium mb-3 text-gray-300">Interview Details</h3>
             {meetingInfo ? (
-              <div className="text-sm text-gray-400 space-y-2">
+              <div className="space-y-3 text-sm text-gray-300">
                 <p><strong>Recruiter Email:</strong> {meetingInfo.recruiterEmail}</p>
                 <p><strong>Company:</strong> {meetingInfo.companyName}</p>
                 <p><strong>Role:</strong> {meetingInfo.role}</p>
@@ -228,9 +139,92 @@ const JoinMeetingPage = () => {
                 <p><strong>Time:</strong> {meetingInfo.time}</p>
               </div>
             ) : (
-              <p className="text-gray-500 text-sm italic">Fetching details...</p>
+              <p className="italic text-gray-500">Loading…</p>
             )}
           </div>
+
+          {/* CENTER — VIDEO PREVIEW */}
+          <div className="lg:col-span-2 flex flex-col items-center">
+
+            <div className="relative bg-black/40 rounded-2xl overflow-hidden 
+                border border-white/10 shadow-[0_0_25px_rgba(56,242,185,0.2)]
+                w-full aspect-video">
+
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover transform scale-x-[-1]"
+              />
+
+              <div className="absolute bottom-3 left-3 bg-black/60 px-2 py-1 rounded-md text-xs">
+                {username}
+              </div>
+            </div>
+
+            {/* CONTROLS */}
+            <div className="flex gap-5 mt-5">
+              <button
+                onClick={toggleMic}
+                className={`px-5 py-2 rounded-full border flex items-center gap-2 
+                ${micOn ? "text-[#38f2b9] border-[#38f2b9] bg-[#38f2b915]" 
+                        : "text-red-400 border-red-500 bg-red-500/10"}
+                `}
+              >
+                {micOn ? <FaMicrophone /> : <FaMicrophoneSlash />}
+                Mic: {micOn ? "On" : "Off"}
+              </button>
+
+              <button
+                onClick={toggleCam}
+                className={`px-5 py-2 rounded-full border flex items-center gap-2 
+                ${camOn ? "text-[#38f2b9] border-[#38f2b9] bg-[#38f2b915]" 
+                        : "text-red-400 border-red-500 bg-red-500/10"}
+                `}
+              >
+                {camOn ? <FaVideo /> : <FaVideoSlash />}
+                Cam: {camOn ? "On" : "Off"}
+              </button>
+            </div>
+
+            {/* JOIN BUTTON */}
+            <button
+              onClick={handleJoin}
+              disabled={loadingJoin}
+              className="mt-6 w-64 py-3 rounded-xl text-lg font-semibold
+              bg-gradient-to-r from-[#38f2b9] to-[#126E7A]
+              hover:shadow-[0_0_20px_#38f2b9] transition
+              flex items-center justify-center gap-3 disabled:opacity-50"
+            >
+              {loadingJoin ? (
+                <>
+                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  Joining Interview…
+                </>
+              ) : (
+                "Join Interview Now"
+              )}
+            </button>
+
+          </div>
+
+          {/* RIGHT — GUIDELINES */}
+          <div className="lg:col-span-1">
+            <h2 className="text-xl font-semibold text-[#38f2b9] mb-4">
+              Important Guidelines
+            </h2>
+
+            <ul className="text-sm text-gray-300 space-y-3 leading-relaxed">
+              <li>• Do not switch browser tabs — detection enabled.</li>
+              <li>• Do not minimize or open other applications.</li>
+              <li>• Screen recording or screenshots may be detected.</li>
+              <li>• Stay visible on camera at all times.</li>
+              <li>• Avoid background noise during the interview.</li>
+              <li>• Ensure a stable internet connection.</li>
+            </ul>
+          </div>
+
         </div>
       </div>
     </div>

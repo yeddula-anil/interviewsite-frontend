@@ -1,10 +1,8 @@
-
 import { Geist, Geist_Mono } from "next/font/google";
 import '@stream-io/video-react-sdk/dist/css/styles.css';
 
-
 import "./globals.css";
-import { PreJoinProvider } from "@/context/PreJoinContext"; // <-- import here
+import { PreJoinProvider } from "@/context/PreJoinContext";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "@/context/AuthProvider";
 
@@ -24,17 +22,24 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
- 
+
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`
+          ${geistSans.variable} 
+          ${geistMono.variable} 
+          antialiased 
+          min-h-screen 
+          bg-gradient-to-r from-[#126E7A] to-[#051B21]
+          text-white
+        `}
       >
         <AuthProvider>
-        <PreJoinProvider>
-          <Toaster position="top-right" />
-          {children}
-        </PreJoinProvider>
+          <PreJoinProvider>
+            <Toaster position="top-right" />
+            {children}
+          </PreJoinProvider>
         </AuthProvider>
       </body>
     </html>

@@ -590,7 +590,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
         {/* Code Editor */}
         {editorOpen && (
-          <div className={`${editorMax ? 'fixed inset-0 z-50 w-full h-full' : 'w-1/3'}
+          <div className={`${editorMax ? 'fixed inset-0 z-50 w-full h-full' : 'w-[30%]'}
             bg-gray-800 border border-gray-700 flex flex-col`}>
             <div className="p-2 bg-gray-700 flex justify-between items-center">
               <span>Code Editor {isReady ? '🟢' : '🔄 Loading...'}</span>
@@ -622,7 +622,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
         {/* Video */}
         {!editorMax && (
-          <div className="flex-1 bg-black rounded-lg border border-gray-700 relative flex items-center justify-center">
+          <div className="w-[40%] flex-1 bg-black rounded-lg border border-gray-700 relative flex items-center justify-center">
             {remote ? (
               <ParticipantView participant={remote} className="w-full h-full object-cover" />
             ) : (
@@ -648,7 +648,7 @@ const CallUI = ({ call, meetingId, username, user }) => {
 
         {/* Chat */}
         {!editorMax && chatOpen && (
-          <div className="w-1/4 bg-gray-800 border border-gray-700 rounded flex flex-col">
+          <div className="w-[30%] bg-gray-800 border border-gray-700 rounded flex flex-col">
             <div className="p-2 bg-gray-700 flex justify-between items-center">
               <span>Chat {isReady ? '🟢' : '🔄 Loading...'}</span>
               <button onClick={() => setChatOpen(false)}>Close</button>

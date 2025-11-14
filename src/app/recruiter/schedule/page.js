@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Button } from '@/components/common/Button';
 import Modal from '@/components/common/Modal';
 import toast from 'react-hot-toast';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthProvider';
 import { useRouter } from 'next/navigation';
 import { usePreJoin } from '@/context/PreJoinContext';
+import { FaSpinner } from "react-icons/fa";
 
 const RecruiterSchedule = () => {
   const router = useRouter();
@@ -18,7 +18,8 @@ const RecruiterSchedule = () => {
   const [newTime, setNewTime] = useState('');
   const [filter, setFilter] = useState('All');
   const [selectedDate, setSelectedDate] = useState('');
-  const [loadingIds, setLoadingIds] = useState([]);
+  const [loadingIds, setLoadingIds] = useState([]);     // For Mark Completed
+  const [joinLoadingIds, setJoinLoadingIds] = useState([]); // NEW: For Join
   const [updating, setUpdating] = useState(false);
   const { setSelectedMeeting } = usePreJoin();
 
@@ -83,14 +84,13 @@ const RecruiterSchedule = () => {
     }
   };
 
-  const canJoin = (schedule) => {
-    return true;
-  };
+  const handleJoin = async (schedule) => {
+    setJoinLoadingIds((prev) => [...prev, schedule.id]);
 
-  const handleJoin = (schedule) => {
-    toast.success(`Joining meeting for ${schedule.candidateEmail}`);
-    setSelectedMeeting(schedule.id);
-    router.push(`/meeting/${schedule.id}`);
+    setTimeout(() => {
+      setSelectedMeeting(schedule.id);
+      router.push(`/meeting/${schedule.id}`);
+    }, 700);
   };
 
   const handleMarkCompleted = async (schedule) => {
@@ -109,133 +109,245 @@ const RecruiterSchedule = () => {
   };
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
-      <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-        <h1 className="text-3xl font-bold text-gray-900">Interview Schedule</h1>
-        <div className="flex flex-col md:flex-row gap-3 items-center">
-          {['All', 'Today', 'Upcoming'].map((f) => (
-            <Button
+    <div
+      className="
+      min-h-screen w-full px-10 py-10 text-white
+      bg-gradient-to-r from-[#126E7A] to-[#051B21]
+    "
+    >
+      {/* HEADER */}
+      <div className="flex justify-between items-center mb-10">
+        <div>
+          <h1 className="text-4xl font-bold tracking-wide">
+            <span className="bg-gradient-to-r from-[#38f2b9] to-white bg-clip-text text-transparent">
+              Interview Schedule
+            </span>
+          </h1>
+          <p className="text-gray-200/80 mt-1">Manage all scheduled interviews</p>
+        </div>
+
+        {/* FILTER BUTTONS */}
+        <div className="flex gap-3">
+          {["All", "Today", "Upcoming"].map((f) => (
+            <button
               key={f}
-              intent={filter === f ? 'primary' : 'secondary'}
-              size="small"
               onClick={() => {
                 setFilter(f);
                 setSelectedDate('');
               }}
+              className={`
+                px-5 py-2 rounded-md text-sm font-medium transition-all
+                ${
+                  filter === f
+                    ? "bg-[#3DF29E] text-black shadow-[0_0_10px_#3df29e80]"
+                    : "bg-[#0d121f]/40 border border-[#1a2234] text-gray-200 hover:bg-[#162032]"
+                }
+              `}
             >
               {f}
-            </Button>
+            </button>
           ))}
-          {/* ✅ Cleaned Date Filter Input */}
+
           <input
             type="date"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="border-2 border-gray-400 bg-white px-3 py-2 rounded-md text-gray-700 focus:outline-none focus:border-blue-500"
+            onChange={(e) => {
+              setSelectedDate(e.target.value);
+              setFilter("All");
+            }}
+            className="
+              border border-[#1b2335] bg-[#0b101a]/60 text-gray-200 px-3 py-2 rounded-md
+              focus:outline-none focus:border-[#38f2b9]
+            "
           />
         </div>
       </div>
 
-      {filteredSchedules.length === 0 && (
-        <p className="text-center text-gray-500 mt-10">
-          No pending interviews found.
-        </p>
-      )}
+      {/* COUNT */}
+      <p className="text-gray-200/70 mb-4">
+        {filteredSchedules.length} Results
+      </p>
 
-      <div className="space-y-4">
+      {/* LIST */}
+      <div className="space-y-5">
         {filteredSchedules.map((s) => (
           <div
             key={s.id}
-            className="flex flex-col md:flex-row items-center justify-between bg-white shadow-md rounded-xl p-4 border border-gray-200 hover:shadow-lg transition"
+            className="
+              w-full p-6 rounded-xl 
+              bg-[#0B0F1A]/80 backdrop-blur-xl
+              border border-[#1b2335]/70 
+              hover:border-[#38f2b9] transition-all 
+              hover:shadow-[0_0_25px_#38f2b930]
+              flex flex-col md:flex-row justify-between items-center
+            "
           >
-            <div className="flex flex-col md:flex-row gap-4 w-full md:w-1/3">
-              <p className="text-sm font-medium text-gray-800">{s.candidateEmail}</p>
-              {s.resume && s.resume.trim() !== '' ? (
+            {/* LEFT */}
+            <div className="flex flex-col md:flex-row gap-5 w-full md:w-1/3 mb-4 md:mb-0">
+              <div>
+                <h2 className="text-lg font-semibold">{s.candidateEmail}</h2>
+                <p className="text-gray-400 text-sm">
+                  📅 {s.date} • {s.time}
+                </p>
+              </div>
+            </div>
+
+            {/* MIDDLE — ROLE + RESUME */}
+            <div className="text-center w-full md:w-1/3 flex flex-col items-center">
+              <p className="text-xl font-semibold text-white mb-2">
+                {s.role}
+              </p>
+
+              {s.resume ? (
                 <a
                   href={s.resume}
                   target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 underline text-sm font-medium"
+                  className="text-orange-400 hover:text-white underline"
                 >
                   View Resume
                 </a>
               ) : (
-                <span className="text-gray-500 text-sm italic">
-                  No resume uploaded
-                </span>
+                <p className="text-gray-500 italic">No Resume Uploaded</p>
               )}
             </div>
 
-            <div className="w-full md:w-1/3 text-center">
-              <p className="text-gray-800 font-semibold">{s.role}</p>
-              <p className="text-gray-600">{`${s.date} | ${s.time}`}</p>
-            </div>
+            {/* RIGHT BUTTONS */}
+            <div className="flex gap-3 w-full md:w-1/3 justify-end">
 
-            <div className="flex gap-2 w-full md:w-1/3 justify-end mt-2 md:mt-0 flex-wrap">
-              <Button
-                intent={canJoin(s) ? 'primary' : 'secondary'}
-                size="small"
+              {/* JOIN */}
+              <button
                 onClick={() => handleJoin(s)}
-                disabled={!canJoin(s)}
+                disabled={joinLoadingIds.includes(s.id)}
+                className="
+                  px-6 py-2.5 rounded-md font-medium text-white 
+                  bg-gradient-to-r from-[#126E7A] to-[#051B21]
+                  hover:from-[#1b8c96] hover:to-[#0a2e36]
+                  transition-all shadow-[0_0_10px_#00000060]
+                  flex items-center justify-center
+                "
               >
-                Join
-              </Button>
+                {joinLoadingIds.includes(s.id) ? (
+                  <FaSpinner className="animate-spin text-white" />
+                ) : (
+                  "Join"
+                )}
+              </button>
 
-              <Button
-                intent="accent"
-                size="small"
+              {/* UPDATE TIMING */}
+              <button
                 onClick={() => openUpdateModal(s)}
-                loading={updating && selectedSchedule?.id === s.id}
+                disabled={updating && selectedSchedule?.id === s.id}
+                className="
+                  px-6 py-2.5 rounded-md font-medium text-white 
+                  bg-gradient-to-r from-[#32296C] to-[#180A44]
+                  hover:from-[#4F3FB0] hover:to-[#240C66]
+                  transition-all border border-[#3f2e8f]/40
+                  flex items-center justify-center
+                "
               >
-                Update Timing
-              </Button>
+                {updating && selectedSchedule?.id === s.id ? (
+                  <FaSpinner className="animate-spin text-white" />
+                ) : (
+                  "Update Timing"
+                )}
+              </button>
 
-              {/* ✅ Fix: Make "Mark Completed" text clearly visible */}
-              <Button
-                intent="success"
-                size="small"
+              {/* MARK COMPLETED */}
+              <button
                 onClick={() => handleMarkCompleted(s)}
-                loading={loadingIds.includes(s.id)}
-                className="!text-white !bg-green-600 hover:!bg-green-700"
+                disabled={loadingIds.includes(s.id)}
+                className="
+                  px-6 py-2.5 rounded-md font-medium text-white 
+                  bg-gradient-to-r from-[#114D28] to-[#0A2A12]
+                  hover:from-[#1D7A3F] hover:to-[#0A401A]
+                  border border-[#165c33]/60 transition-all
+                  flex items-center justify-center
+                "
               >
-                Mark Completed
-              </Button>
+                {loadingIds.includes(s.id) ? (
+                  <FaSpinner className="animate-spin text-white" />
+                ) : (
+                  "Mark Completed"
+                )}
+              </button>
+
             </div>
           </div>
         ))}
+
+        {filteredSchedules.length === 0 && (
+          <p className="text-center text-gray-200/70 py-20 text-lg">
+            No interviews found.
+          </p>
+        )}
       </div>
 
+      {/* UPDATE TIMING MODAL */}
       {modalOpen && selectedSchedule && (
         <Modal onClose={() => setModalOpen(false)} title="Update Interview Timing">
           <div className="flex flex-col gap-4">
+
+            {/* DATE FIELD */}
             <div>
-              <label className="block text-gray-600 mb-1">Date</label>
+              <label className="block text-gray-300 mb-1">Select New Date</label>
+
               <input
                 type="date"
                 value={newDate}
                 onChange={(e) => setNewDate(e.target.value)}
-                className="w-full border-2 border-gray-400 px-3 py-2 rounded-md"
+                className="
+                  w-full px-4 py-2.5 rounded-lg 
+                  bg-[#1a2234] text-white 
+                  border border-[#374151]
+                  shadow-inner
+                  focus:outline-none 
+                  focus:border-[#38f2b9]
+                  transition-all
+                "
               />
             </div>
+
+            {/* TIME FIELD */}
             <div>
-              <label className="block text-gray-600 mb-1">Time</label>
+              <label className="block text-gray-300 mb-1">Select New Time</label>
+
               <input
                 type="time"
                 value={newTime}
                 onChange={(e) => setNewTime(e.target.value)}
-                className="w-full border-2 border-gray-400 px-3 py-2 rounded-md"
+                className="
+                  w-full px-4 py-2.5 rounded-lg 
+                  bg-[#1a2234] text-white 
+                  border border-[#374151]
+                  shadow-inner
+                  focus:outline-none 
+                  focus:border-[#38f2b9]
+                  transition-all
+                "
               />
             </div>
-            <Button
-              size="medium"
-              intent="primary"
+
+            {/* UPDATE BUTTON */}
+            <button
               onClick={handleUpdateTiming}
-              loading={updating}
+              disabled={updating}
+              className="
+                px-6 py-2.5 rounded-md font-medium text-white 
+                bg-gradient-to-r from-[#126E7A] to-[#051B21]
+                hover:from-[#1b8c96] hover:to-[#0a2e36]
+                transition-all flex items-center justify-center
+              "
             >
-              Update
-            </Button>
+              {updating ? (
+                <FaSpinner className="animate-spin text-white text-xl" />
+              ) : (
+                "Update Timing"
+              )}
+            </button>
           </div>
         </Modal>
+
+
       )}
     </div>
   );

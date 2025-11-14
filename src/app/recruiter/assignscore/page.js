@@ -1,10 +1,11 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect } from 'react';
-import { Button } from '@/components/common/Button';
-import toast from 'react-hot-toast';
-import axiosInstance from '@/utils/axiosInstance';
-import { useAuth } from '@/context/AuthProvider';
+import React, { useState, useEffect } from "react";
+import { Button } from "@/components/common/Button";
+import toast from "react-hot-toast";
+import axiosInstance from "@/utils/axiosInstance";
+import { useAuth } from "@/context/AuthProvider";
+import { FaSpinner } from "react-icons/fa";
 
 const CompletedInterviews = () => {
   const [schedules, setSchedules] = useState([]);
@@ -12,7 +13,7 @@ const CompletedInterviews = () => {
   const [loadingScores, setLoadingScores] = useState({});
   const [activeScoreInput, setActiveScoreInput] = useState(null);
   const [reviewModal, setReviewModal] = useState({ open: false, scheduleId: null });
-  const [reviewText, setReviewText] = useState('');
+  const [reviewText, setReviewText] = useState("");
   const { user } = useAuth();
 
   const [stats, setStats] = useState({
@@ -32,18 +33,18 @@ const CompletedInterviews = () => {
 
       const completed = data.filter((s) => s.completed === true);
 
-      // Sort: unscored first, then recently completed
+      // Sort: unscored first
       const sorted = completed.sort((a, b) => {
-        const aHasScore = a.candidateMarks !== null && a.candidateMarks !== undefined;
-        const bHasScore = b.candidateMarks !== null && b.candidateMarks !== undefined;
+        const aHasScore = a.candidateMarks !== null;
+        const bHasScore = b.candidateMarks !== null;
+
         if (!aHasScore && bHasScore) return -1;
         if (aHasScore && !bHasScore) return 1;
-        const aMarked = a.markedAt ? new Date(a.markedAt) : 0;
-        const bMarked = b.markedAt ? new Date(b.markedAt) : 0;
-        return bMarked - aMarked;
+
+        return new Date(b.markedAt || 0) - new Date(a.markedAt || 0);
       });
 
-      // Update stats
+      // Stats Update
       const scored = completed.filter((s) => s.candidateMarks !== null);
       const avgScore =
         scored.length > 0
@@ -51,12 +52,13 @@ const CompletedInterviews = () => {
               scored.reduce((sum, s) => sum + (s.candidateMarks || 0), 0) / scored.length
             ).toFixed(1)
           : 0;
+
       const unscored = completed.length - scored.length;
 
       setStats({ avgScore, total: completed.length, unscored });
       setSchedules(sorted);
     } catch (err) {
-      toast.error('Failed to fetch completed interviews');
+      toast.error("Failed to fetch completed interviews");
     }
   };
 
@@ -68,7 +70,7 @@ const CompletedInterviews = () => {
   const handleAssignScore = async (scheduleId) => {
     const score = parseFloat(scoreInputs[scheduleId]);
     if (isNaN(score) || score < 0 || score > 50) {
-      toast.error('Enter a valid score between 0 and 50');
+      toast.error("Enter a valid score between 0 and 50");
       return;
     }
 
@@ -76,11 +78,11 @@ const CompletedInterviews = () => {
 
     try {
       await axiosInstance.put(`/meetings/${scheduleId}/score`, { score });
-      toast.success('Score assigned successfully!');
+      toast.success("Score assigned successfully!");
       setActiveScoreInput(null);
       fetchCompletedInterviews();
     } catch {
-      toast.error('Failed to assign score');
+      toast.error("Failed to assign score");
     } finally {
       setLoadingScores((prev) => ({ ...prev, [scheduleId]: false }));
     }
@@ -89,92 +91,122 @@ const CompletedInterviews = () => {
   // Review modal
   const openReviewModal = (scheduleId) => {
     setReviewModal({ open: true, scheduleId });
-    setReviewText('');
+    setReviewText("");
   };
 
   const handleSubmitReview = async () => {
     if (!reviewText.trim()) {
-      toast.error('Review cannot be empty');
+      toast.error("Review cannot be empty");
       return;
     }
+
+    setLoadingScores((prev) => ({ ...prev, review: true }));
+
     try {
       await axiosInstance.put(`/meetings/${reviewModal.scheduleId}/review`, {
         review: reviewText,
       });
-      toast.success('Review submitted!');
+      toast.success("Review submitted!");
       setReviewModal({ open: false, scheduleId: null });
       fetchCompletedInterviews();
     } catch {
-      toast.error('Failed to submit review');
+      toast.error("Failed to submit review");
+    } finally {
+      setLoadingScores((prev) => ({ ...prev, review: false }));
     }
   };
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
-      {/* ==== Header ==== */}
-      <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
-        <h1 className="text-3xl font-bold text-gray-900">Completed Interviews</h1>
+    <div
+      className="
+        min-h-screen w-full px-10 py-10 text-white
+        bg-gradient-to-r from-[#126E7A] to-[#051B21]
+      "
+    >
+      {/* HEADER */}
+      <div className="flex flex-col md:flex-row justify-between items-center mb-10 gap-4">
+        <div>
+          <h1 className="text-4xl font-bold tracking-wide">
+            <span className="bg-gradient-to-r from-[#38f2b9] to-white bg-clip-text text-transparent">
+              Completed Interviews
+            </span>
+          </h1>
+          <p className="text-gray-200/80 mt-1">Review & Score Completed Interviews</p>
+        </div>
 
-        {/* Summary Cards */}
-        <div className="flex flex-wrap gap-4">
-          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
-            <p className="text-sm text-gray-500">Average Score</p>
-            <p className="text-2xl font-bold text-blue-600">{stats.avgScore}</p>
-          </div>
-          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
-            <p className="text-sm text-gray-500">Total</p>
-            <p className="text-2xl font-bold text-gray-800">{stats.total}</p>
-          </div>
-          <div className="bg-white border rounded-lg shadow-sm p-4 text-center w-36">
-            <p className="text-sm text-gray-500">Unscored</p>
-            <p className="text-2xl font-bold text-red-500">{stats.unscored}</p>
-          </div>
+        {/* Stats */}
+        <div className="flex gap-4">
+          {[ 
+            { label: "Average Score", value: stats.avgScore, color: "text-[#3DF29E]" },
+            { label: "Total", value: stats.total, color: "text-white" },
+            { label: "Unscored", value: stats.unscored, color: "text-red-400" }
+          ].map((stat, i) => (
+            <div
+              key={i}
+              className="
+                bg-[#0B0F1A]/70 backdrop-blur-xl
+                px-5 py-3 rounded-xl border border-[#1b2335]
+                shadow-[0_0_12px_#38f2b935] text-center
+              "
+            >
+              <p className="text-gray-300 text-sm">{stat.label}</p>
+              <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* ==== Body ==== */}
+      {/* LIST */}
       {schedules.length === 0 ? (
-        <p className="text-center text-gray-500 mt-10">
+        <p className="text-center text-gray-200/70 py-10 text-lg">
           No completed interviews found.
         </p>
       ) : (
-        <div className="grid gap-4">
+        <div className="space-y-5">
           {schedules.map((s) => (
             <div
               key={s.id}
-              className="bg-white p-5 rounded-xl shadow-md border border-gray-200 hover:shadow-lg transition-all flex flex-col md:flex-row justify-between items-center"
+              className="
+                w-full p-6 rounded-xl 
+                bg-[#0B0F1A]/80 backdrop-blur-xl
+                border border-[#1b2335]/70 
+                hover:border-[#38f2b9] transition-all 
+                hover:shadow-[0_0_20px_#38f2b930]
+                flex flex-col md:flex-row justify-between items-center
+              "
             >
-              {/* Left Section */}
-              <div className="flex flex-col gap-2 w-full md:w-1/3">
-                <p className="font-medium text-gray-900">{s.candidateEmail}</p>
-                {s.candidateResumeUrl && s.candidateResumeUrl.trim() !== '' ? (
+              {/* LEFT */}
+              <div className="w-full md:w-1/3">
+                <h2 className="text-lg font-semibold text-white">{s.candidateEmail}</h2>
+
+                {s.candidateResumeUrl ? (
                   <a
                     href={s.candidateResumeUrl}
                     target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 underline text-sm font-medium"
+                    className="text-orange-400 hover:text-white underline text-sm"
                   >
                     View Resume
                   </a>
                 ) : (
-                  <span className="text-gray-500 text-sm italic">
-                    No resume uploaded
-                  </span>
+                  <p className="text-gray-500 italic text-sm">No Resume Uploaded</p>
                 )}
               </div>
 
-              {/* Middle Section */}
+              {/* MIDDLE */}
               <div className="text-center w-full md:w-1/3">
-                <p className="font-semibold text-gray-800">{s.role}</p>
-                <p className="text-gray-500">{`${s.date} | ${s.time}`}</p>
+                <p className="text-xl font-semibold text-white">{s.role}</p>
+                <p className="text-gray-400 text-sm mt-1">
+                  📅 {s.date} • {s.time}
+                </p>
+
                 {s.candidateMarks !== null && (
                   <p
-                    className={`mt-1 font-semibold ${
+                    className={`mt-2 font-bold ${
                       s.candidateMarks >= 40
-                        ? 'text-green-600'
+                        ? "text-green-400"
                         : s.candidateMarks >= 25
-                        ? 'text-yellow-500'
-                        : 'text-red-500'
+                        ? "text-yellow-300"
+                        : "text-red-400"
                     }`}
                   >
                     Score: {s.candidateMarks} / 50
@@ -182,8 +214,10 @@ const CompletedInterviews = () => {
                 )}
               </div>
 
-              {/* Right Section */}
-              <div className="flex flex-wrap justify-end gap-2 w-full md:w-1/3 mt-2 md:mt-0">
+              {/* RIGHT ACTIONS */}
+              <div className="flex flex-wrap gap-2 w-full md:w-1/3 justify-end mt-3 md:mt-0">
+
+                {/* Assign Score */}
                 {s.candidateMarks === null && (
                   <>
                     {activeScoreInput === s.id ? (
@@ -193,74 +227,121 @@ const CompletedInterviews = () => {
                           min="0"
                           max="50"
                           placeholder="0–50"
-                          className="border border-gray-400 rounded-md px-2 py-1 w-20 focus:ring-2 focus:ring-blue-500 text-gray-800"
-                          value={scoreInputs[s.id] || ''}
+                          className="
+                            border border-[#1b2335] bg-[#0b101a] 
+                            text-white px-3 py-1 rounded-md w-20
+                            focus:border-[#38f2b9]
+                          "
+                          value={scoreInputs[s.id] || ""}
                           onChange={(e) =>
-                            setScoreInputs({ ...scoreInputs, [s.id]: e.target.value })
+                            setScoreInputs({
+                              ...scoreInputs,
+                              [s.id]: e.target.value,
+                            })
                           }
                         />
-                        <Button
-                          size="small"
-                          intent="primary"
+
+                        <button
                           onClick={() => handleAssignScore(s.id)}
-                          loading={loadingScores[s.id]}
+                          disabled={loadingScores[s.id]}
+                          className="
+                            px-4 py-1 rounded-md bg-[#38f2b9]
+                            text-black font-semibold shadow-md
+                            flex items-center justify-center
+                          "
                         >
-                          {loadingScores[s.id] ? 'Saving...' : 'Save'}
-                        </Button>
-                        <Button
-                          size="small"
-                          intent="secondary"
+                          {loadingScores[s.id] ? (
+                            <FaSpinner className="animate-spin text-black" />
+                          ) : (
+                            "Save"
+                          )}
+                        </button>
+
+                        <button
+                          className="
+                            px-4 py-1 rounded-md bg-[#1f293b]
+                            text-white font-semibold
+                          "
                           onClick={() => setActiveScoreInput(null)}
                         >
                           Cancel
-                        </Button>
+                        </button>
                       </div>
                     ) : (
-                      <Button
-                        size="small"
-                        intent="primary"
+                      <button
+                        className="
+                          px-4 py-2 rounded-md bg-gradient-to-r
+                          from-[#32296C] to-[#180A44]
+                          text-white shadow-md
+                          border border-[#3f2e8f]/40
+                          hover:opacity-90
+                        "
                         onClick={() => setActiveScoreInput(s.id)}
                       >
                         Assign Score
-                      </Button>
+                      </button>
                     )}
                   </>
                 )}
-                <Button
-                  size="small"
-                  intent="secondary"
+
+                {/* Review */}
+                <button
+                  className="
+                    px-4 py-2 rounded-md
+                    bg-gradient-to-r from-[#126E7A] to-[#051B21]
+                    text-white shadow-md hover:opacity-90
+                  "
                   onClick={() => openReviewModal(s.id)}
                 >
                   Write Review
-                </Button>
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Review Modal */}
+      {/* REVIEW MODAL */}
       {reviewModal.open && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/40 z-50">
-          <div className="bg-white rounded-lg shadow-lg w-96 p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-3">Write Review</h2>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-[#0B0F1A] border border-[#38f2b9]/40 backdrop-blur-xl 
+          rounded-xl p-6 w-96 shadow-[0_0_25px_#38f2b930] text-white">
+
+            <h2 className="text-xl font-bold mb-3 text-center">Write Review</h2>
+
             <textarea
-              className="w-full border border-gray-400 rounded-md p-2 h-32 text-gray-800 focus:ring-2 focus:ring-blue-500"
+              className="
+                w-full bg-[#111827] text-white border border-[#1b2335]
+                rounded-md p-2 h-32 focus:border-[#38f2b9]
+              "
               placeholder="Write your review here..."
               value={reviewText}
               onChange={(e) => setReviewText(e.target.value)}
             />
-            <div className="flex justify-end gap-2 mt-3">
-              <Button
-                size="small"
-                intent="secondary"
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="
+                  px-4 py-2 rounded-md bg-[#1f293b] text-white
+                "
                 onClick={() => setReviewModal({ open: false, scheduleId: null })}
               >
                 Cancel
-              </Button>
-              <Button size="small" intent="primary" onClick={handleSubmitReview}>
-                Submit
-              </Button>
+              </button>
+
+              <button
+                onClick={handleSubmitReview}
+                className="
+                  px-4 py-2 rounded-md bg-[#38f2b9] text-black font-semibold
+                  flex items-center justify-center
+                "
+              >
+                {loadingScores.review ? (
+                  <FaSpinner className="animate-spin text-black" />
+                ) : (
+                  "Submit"
+                )}
+              </button>
             </div>
           </div>
         </div>

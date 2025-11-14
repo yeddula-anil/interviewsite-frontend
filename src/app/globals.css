@@ -32,3 +32,66 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+:root {
+  --bg-main: #0A0F14;
+  --bg-hero: #0F1A20;
+  --bg-panel: #111C22;
+  --bg-card: #15232B;
+  --bg-sidebar: #0A0F12;
+
+  --text-primary: #D9E2EC;
+  --text-secondary: #9BA8B3;
+  --text-muted: #6C7983;
+  --text-disabled: #4A535A;
+
+  --accent-neon-green: #2DFE87;
+  --accent-neon-cyan: #12F7FF;
+  --accent-blue: #3F8CFF;
+  --accent-purple: #9D4EDD;
+
+  --border-soft: #1E2A31;
+  --border-medium: #23333C;
+  --border-neon: rgba(45,254,135,0.3);
+
+  --gradient-neon: linear-gradient(135deg, #0AFF7A, #32FF7E, #23FFA0);
+  --gradient-cyan: linear-gradient(135deg, #00E0FF, #12F7FF, #00C9FF);
+  --gradient-dark: linear-gradient(180deg, #0A0F14, #0F1A20, #111C22);
+}
+.loader {
+  width: 18px;
+  height: 18px;
+  border: 3px solid rgba(255,255,255,0.3);
+  border-top-color: var(--accent-neon-green);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.neon-btn {
+  background: var(--gradient-neon);
+  color: #0A0F14;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-weight: 600;
+  box-shadow: 0 0 12px rgba(45, 254, 135, 0.45);
+  transition: 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.neon-btn:hover {
+  transform: scale(1.03);
+  box-shadow: 0 0 20px rgba(45, 254, 135, 0.7);
+}
+
+.neon-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
