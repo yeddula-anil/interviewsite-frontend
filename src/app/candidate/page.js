@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import axiosInstance from "@/utils/axiosInstance";
-import uploadToCloudinary from "@/utils/uploadToCloudinary";
+import {uploadToCloudinary} from "@/utils/uploadToCloudinary";
 import { useAuth } from "@/context/AuthProvider";
 import toast from "react-hot-toast";
 

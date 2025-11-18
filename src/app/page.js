@@ -71,7 +71,7 @@ export default function Home() {
       {/* NAVBAR */}
       <nav className="w-full flex justify-between items-center px-10 py-6 border-b border-[#0f2e2e] bg-black/20 backdrop-blur-md">
         <h1 className="text-2xl font-bold tracking-wide bg-gradient-to-r from-[#38f2b9] to-[#47ffd7] text-transparent bg-clip-text">
-          IntervueX
+          UIMP
         </h1>
 
         <div className="flex gap-4">

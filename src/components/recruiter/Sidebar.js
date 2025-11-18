@@ -8,7 +8,7 @@ import { useAuth } from "@/context/AuthProvider";
 const NAV_ITEMS = [
   { href: "/recruiter", label: "Dashboard", icon: "🏠" },
   { href: "/recruiter/schedule", label: "Schedule", icon: "📅" },
-  { href: "/recruiter/recordings", label: "Recordings", icon: "🎞️" },
+  // { href: "/recruiter/recordings", label: "Recordings", icon: "🎞️" },
   { href: "/recruiter/assignscore", label: "Assign Marks", icon: "⭐" },
   { href: "/recruiter/scheduleMeeting", label: "Schedule Interview", icon: "📘" },
 ];
@@ -79,7 +79,7 @@ export const RecruiterSidebar = () => {
         `}
       >
         {/* PROFILE LABEL */}
-        <div className="h-16 flex items-center px-4 mb-4">
+        <div className="h-16 flex items-center px-4 mb-4" onClick={() => router.push("/recruiter/my-profile")}>
           <span className="text-white font-semibold text-lg">
             {displayName}
           </span>
@@ -127,7 +127,7 @@ export const RecruiterSidebar = () => {
         "
       >
         {/* PROFILE ICON */}
-        <div className="h-16 flex items-center">
+        <div className="h-16 flex items-center" onClick={() => router.push("/recruiter/my-profile")}>
           <div className="w-14 h-14 rounded-xl bg-[#1e293b] overflow-hidden flex items-center justify-center">
             {profilePic ? (
               <img src={profilePic} className="w-full h-full object-cover" />

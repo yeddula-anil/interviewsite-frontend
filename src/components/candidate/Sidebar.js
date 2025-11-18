@@ -82,7 +82,7 @@ export const Sidebar = () => {
         `}
       >
         {/* PROFILE ROW */}
-        <div className="h-16 flex items-center px-4 mb-4">
+        <div className="h-16 flex items-center px-4 mb-4" onClick={() => router.push("/candidate/my-profile")}>
           <span className="text-white font-semibold text-lg">
             {displayName}
           </span>
@@ -130,7 +130,7 @@ export const Sidebar = () => {
         "
       >
         {/* PROFILE ICON */}
-        <div className="h-16 flex items-center">
+        <div className="h-16 flex items-center" onClick={() => router.push("/candidate/my-profile")}>
           <div className="w-14 h-14 rounded-xl bg-[#1e293b] overflow-hidden flex items-center justify-center">
             {profilePic ? (
               <img src={profilePic} className="w-full h-full object-cover" />

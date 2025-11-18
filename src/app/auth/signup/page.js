@@ -1,21 +1,22 @@
 'use client';
+
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthProvider';
 import { Button } from '@/components/common/Button';
 import toast from 'react-hot-toast';
 
-
 export default function SignupPage() {
   const router = useRouter();
-  const {signup}=useAuth()
-  // use context
+  const { signup } = useAuth();
+
   const [formData, setFormData] = useState({
     username: '',
     email: '',
     role: '',
     password: '',
   });
+
   const [loading, setLoading] = useState(false);
 
   const roles = ['CANDIDATE', 'RECRUITER'];
@@ -39,7 +40,6 @@ export default function SignupPage() {
       if (success) {
         toast.success('Signup successful!');
 
-        // Redirect based on role
         switch (user.role) {
           case 'CANDIDATE':
             router.push('/candidate/');
@@ -51,7 +51,7 @@ export default function SignupPage() {
             router.push('/');
         }
       } else {
-        toast.error("error  while signing up");
+        toast.error("Error while signing up");
       }
     } catch (err) {
       console.error(err);
@@ -62,16 +62,34 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="bg-white shadow-md rounded-2xl p-8 w-full max-w-md border border-gray-200">
-        <h2 className="text-3xl font-bold text-center text-gray-800 mb-8">
+    <div
+      className="min-h-screen flex items-center justify-center px-4"
+      style={{
+        background:
+          "linear-gradient(180deg, #031719 0%, #041214 60%, #02090A 100%)",
+      }}
+    >
+      <div
+        className="
+        w-full max-w-md p-8 rounded-2xl
+        bg-[#041e1e]/60 backdrop-blur-xl
+        border border-[#0e3a35]
+        shadow-[0_0_40px_#0ff3bd30]
+      "
+      >
+        <h2
+          className="
+          text-4xl font-extrabold text-center mb-8 
+          bg-gradient-to-r from-[#38f2b9] to-[#47ffd7] text-transparent bg-clip-text
+        "
+        >
           Create Account
         </h2>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Username */}
+          {/* USERNAME */}
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <label className="text-sm font-semibold text-[#38f2b9] mb-2 block">
               Username
             </label>
             <input
@@ -80,14 +98,18 @@ export default function SignupPage() {
               value={formData.username}
               onChange={handleChange}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              className="
+                w-full px-3 py-2 rounded-lg bg-[#031c1c]
+                text-white border border-[#0e3a35]
+                focus:outline-none focus:ring-2 focus:ring-[#38f2b9]
+              "
               placeholder="Enter your username"
             />
           </div>
 
-          {/* Email */}
+          {/* EMAIL */}
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <label className="text-sm font-semibold text-[#38f2b9] mb-2 block">
               Email
             </label>
             <input
@@ -96,14 +118,18 @@ export default function SignupPage() {
               value={formData.email}
               onChange={handleChange}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              className="
+                w-full px-3 py-2 rounded-lg bg-[#031c1c]
+                text-white border border-[#0e3a35]
+                focus:outline-none focus:ring-2 focus:ring-[#38f2b9]
+              "
               placeholder="Enter your email"
             />
           </div>
 
-          {/* Role */}
+          {/* ROLE */}
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <label className="text-sm font-semibold text-[#38f2b9] mb-2 block">
               Role
             </label>
             <select
@@ -111,7 +137,11 @@ export default function SignupPage() {
               value={formData.role}
               onChange={handleChange}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              className="
+                w-full px-3 py-2 rounded-lg bg-[#031c1c] text-white
+                border border-[#0e3a35]
+                focus:outline-none focus:ring-2 focus:ring-[#38f2b9]
+              "
             >
               <option value="">Select Role</option>
               {roles.map((role) => (
@@ -122,9 +152,9 @@ export default function SignupPage() {
             </select>
           </div>
 
-          {/* Password */}
+          {/* PASSWORD */}
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
+            <label className="text-sm font-semibold text-[#38f2b9] mb-2 block">
               Password
             </label>
             <input
@@ -133,26 +163,39 @@ export default function SignupPage() {
               value={formData.password}
               onChange={handleChange}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              className="
+                w-full px-3 py-2 rounded-lg bg-[#031c1c]
+                text-white border border-[#0e3a35]
+                focus:outline-none focus:ring-2 focus:ring-[#38f2b9]
+              "
               placeholder="Enter your password"
             />
           </div>
 
-          {/* Submit */}
+          {/* SUBMIT BUTTON — UPDATED: REMOVED GLASS EFFECT */}
           <Button
             type="submit"
             disabled={loading}
-            className="w-full text-white font-semibold py-2 rounded-lg transition"
+            className="
+              w-full py-2 rounded-lg font-semibold text-black
+              bg-gradient-to-r from-[#38f2b9] to-[#47ffd7]
+              shadow-[0_0_20px_#38f2b9]
+              hover:scale-[1.03] transition
+            "
           >
-            {loading ? 'Signing up...' : 'Sign Up'}
+            {loading ? (
+              <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+            ) : (
+              'Sign Up'
+            )}
           </Button>
         </form>
 
-        <p className="text-sm text-center mt-6 text-gray-600">
+        <p className="text-sm text-center mt-6 text-gray-300">
           Already have an account?{' '}
           <span
             onClick={() => router.push('/auth/signin')}
-            className="text-indigo-600 cursor-pointer hover:underline font-medium"
+            className="text-[#38f2b9] cursor-pointer hover:underline font-medium"
           >
             Login
           </span>

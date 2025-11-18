@@ -197,22 +197,22 @@ const CompletedInterviews = () => {
               Interview Details
             </h2>
 
-<div
-  className="
-    w-20 h-20 rounded-2xl
-    bg-gradient-to-br from-[#0A1E24] to-[#0F3A40]
-    border border-[#38f2b9]/40
-    shadow-[0_0_18px_rgba(56,242,185,0.25)]
-    overflow-hidden
-    flex items-center justify-center
-  "
->
-  <img
-    src={selectedInterview.companyLogoUrl}
-    alt={selectedInterview.companyName}
-    className="w-full h-full object-cover scale-[1.4]"
-  />
-</div>
+            <div
+              className="
+                w-20 h-20 rounded-2xl
+                bg-gradient-to-br from-[#0A1E24] to-[#0F3A40]
+                border border-[#38f2b9]/40
+                shadow-[0_0_18px_rgba(56,242,185,0.25)]
+                overflow-hidden
+                flex items-center justify-center
+              "
+            >
+              <img
+                src={selectedInterview.companyLogoUrl}
+                alt={selectedInterview.companyName}
+                className="w-full h-full object-cover scale-[1.4]"
+              />
+            </div>
 
 
 
