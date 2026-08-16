@@ -75,14 +75,15 @@ export const AuthProvider = ({ children }) => {
       };
     }
   };
-  const signup = async (username, email, password,role) => {
-  try {
-    const res = await axiosInstance.post('/auth/register', {
-      username,
-      email,
-      password,
-      role
-    });
+  const signup = async (username, email, password, role, token = null) => {
+    try {
+      const url = token ? `/auth/register?token=${encodeURIComponent(token)}` : '/auth/register';
+      const res = await axiosInstance.post(url, {
+        username,
+        email,
+        password,
+        role
+      });
 
     // If backend returns a token on signup
     if (res.data.accessToken) {

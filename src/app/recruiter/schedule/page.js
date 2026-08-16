@@ -198,10 +198,11 @@ const RecruiterSchedule = () => {
                 {s.role}
               </p>
 
-              {s.resume ? (
+              {s.candidateResumeUrl ? (
                 <a
-                  href={s.resume}
+                  href={s.candidateResumeUrl}
                   target="_blank"
+                  rel="noopener noreferrer"
                   className="text-orange-400 hover:text-white underline"
                 >
                   View Resume

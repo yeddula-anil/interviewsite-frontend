@@ -9,7 +9,7 @@ import { uploadToCloudinary } from "@/utils/uploadToCloudinary";
 import axiosInstance from "@/utils/axiosInstance";
 
 const UserProfileUpdate = () => {
-  const { user } = useAuth();
+  const { user, checkAuth } = useAuth();
 
   const [newUsername, setNewUsername] = useState(user?.username || "");
   const [newProfilePic, setNewProfilePic] = useState(user?.profilePicUrl || "");
@@ -51,6 +51,7 @@ const UserProfileUpdate = () => {
       };
 
       await axiosInstance.put(`/user/update/${user.id}`, payload);
+      if (checkAuth) await checkAuth();
       toast.success("Profile updated successfully!");
     } catch (err) {
       toast.error("Failed to update profile");

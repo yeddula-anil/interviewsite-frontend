@@ -1,13 +1,15 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthProvider';
 import { Button } from '@/components/common/Button';
 import toast from 'react-hot-toast';
 
-export default function SignupPage() {
+function SignupForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const token = searchParams.get('token');
   const { signup } = useAuth();
 
   const [formData, setFormData] = useState({
@@ -34,7 +36,8 @@ export default function SignupPage() {
         formData.username,
         formData.email,
         formData.password,
-        formData.role
+        formData.role,
+        token
       );
 
       if (success) {
@@ -202,5 +205,13 @@ export default function SignupPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-white">Loading...</div>}>
+      <SignupForm />
+    </Suspense>
   );
 }

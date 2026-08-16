@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 export async function GET(request, { params }) {
   try {
     // 1️⃣ Extract meetingId and token from URL
-    const { meetingId } = params;
+    const { meetingId } = await params;
     const { searchParams } = new URL(request.url);
     const token = searchParams.get("token");
     
@@ -19,10 +19,10 @@ export async function GET(request, { params }) {
 
     console.log(`🎬 Fetching Stream recording for meeting: ${meetingId}, `);
 
-    // 2️⃣ Stream API URL (Singapore region for your app)
-    const appId = process.env.STREAM_APP_ID;
+    // 2️⃣ Stream API URL
+    const appId = process.env.STREAM_APP_ID || "1445640";
     const callType = "default";
-    const streamUrl = `https://video.stream-io-api.com/api/v1/app/1445640/call/default/${meetingId}/recordings`;
+    const streamUrl = `https://video.stream-io-api.com/api/v1/app/${appId}/call/${callType}/${meetingId}/recordings`;
 
     console.log(`🌏 Requesting Stream API: ${streamUrl}`);
 

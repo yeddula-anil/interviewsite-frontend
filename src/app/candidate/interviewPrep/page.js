@@ -48,7 +48,7 @@ const InterviewExperiences = () => {
   const toggleLike = async (id) => {
     if (!user) return toast.error("Please log in first");
 
-    const userId = user.userId;
+    const userId = user?.id;
 
     setExperiences((prev) =>
       prev.map((exp) =>
@@ -80,7 +80,7 @@ const InterviewExperiences = () => {
     setPosting(true);
 
     const payload = {
-      authorId: user?.userId,
+      authorId: user?.id,
       authorName: user?.username || "Anonymous",
       authorAvatar: user?.profilePicUrl || null,
       ...newExperience,
@@ -194,7 +194,7 @@ const InterviewExperiences = () => {
             <p className="text-gray-400 text-center">No experiences found.</p>
           ) : (
             filtered.map((exp) => {
-              const isLiked = exp.likedBy?.includes(user?.userId);
+              const isLiked = exp.likedBy?.includes(user?.id);
 
               return (
                 <div

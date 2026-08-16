@@ -409,8 +409,9 @@ const CallUI = ({ call, meetingId, username, user }) => {
     let alive = true;
 
     const connect = async () => {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
       client = new StompClient({
-        webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
+        webSocketFactory: () => new SockJS(`${apiUrl}/ws`),
         reconnectDelay: 2000,
       });
 

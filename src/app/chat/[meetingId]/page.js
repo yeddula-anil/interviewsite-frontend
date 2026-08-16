@@ -130,8 +130,9 @@ export default function MeetingWebRTC() {
     const connectAndJoin = async () => {
       setStatus('Connecting signaling...');
 
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
       stompClient = new StompClient({
-        webSocketFactory: () => new SockJS(`${process.env.NEXT_PUBLIC_API_URL}/ws`),
+        webSocketFactory: () => new SockJS(`${apiUrl}/ws`),
         reconnectDelay: 3000,
       });
 
